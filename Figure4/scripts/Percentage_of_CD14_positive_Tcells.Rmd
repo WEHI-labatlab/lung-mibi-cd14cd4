@@ -1,0 +1,472 @@
+---
+subtitle: "Percentage of CD14 positive (box plot)"
+title: "Figure 4"
+author: "Claire Marceaux, Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA, prompt = T, warning = F, message=F)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(ggplot2)
+library(patchwork)
+library(RColorBrewer)
+library(dplyr)
+library(tidyr)
+```
+
+# Preparation
+
+In this file we calculate the percentage of CD14 positive T cells relative to the total CD14+ and CD14- cell subtype (two cohorts: CM and Sorin).
+
+
+## Read the data
+
+```{r}
+#cells_Enfield <- readRDS(file="../../data/Enfield_tumor_cells_info.rds")
+#patient_survival_Enfield <- readRDS(file="../../data/Enfield_patient_survival.rds")
+cell_info_sorin <- readRDS(file="../../data/Sorin_cell_info.rds")
+patient_counts_CM <- readRDS(file="../../data/CM_patient_counts_no_compartment_all_FM_TRM_df.rds")
+```
+
+## Source the functions
+
+```{r source_functions}
+source('../../src/calculate_cell_type_percentages.R')
+```
+
+## Set the output folder
+
+```{r}
+output_folder <- "../plots/"
+if (!dir.exists(output_folder)){
+    dir.create(output_folder, recursive = T)
+}
+```
+
+## Set the colors
+
+```{r}
+cd14pos_colors <- c(
+    "mediumorchid3",
+    "mediumpurple3",
+    #"salmon3" - that was for NK CD14+, for usual NK is salmon1 
+    "pink3"
+)
+```
+
+# Plot Functions
+
+```{r}
+do_boxplot_cd14pos_percentage <- function(percentages_df, cd14pos_colors, dodge){
+  p <- ggplot(percentages_df, aes(x = percentage, y=value)) +
+    # The actual box plot
+    geom_boxplot(aes(fill=percentage), position = position_dodge(dodge))+
+    # The jitter plot
+    geom_jitter(aes(fill=percentage), alpha=1, size=2, position = position_dodge(dodge)) +
+    #scale_shape_manual(values = c( 19, 10 ,1 ))+
+    scale_fill_manual(values=cd14pos_colors) +
+    #scale_color_manual(values=c("black", "grey67", "grey")) +
+    #scale_alpha_manual(values=c(1, 0.7, 0.3)) +
+    theme(
+        axis.title.y=element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        axis.line.y = element_line(),
+        axis.line.x = element_line(),
+    )
+  return(p)
+}
+
+do_ordered_boxplot <- function(percentages_df, cd14pos_colors_h3, dodge){
+  #Here we need to reorder by median value
+
+ggplot(percentages_df, aes(x = reorder(percentage, value, FUN = median, decreasing=T), 
+                           y=value)) +
+    # The actual box plot
+    geom_boxplot(aes(fill=percentage), position = position_dodge(dodge), width = 0.5)+
+    # The jitter plot
+    geom_jitter(aes(fill=percentage), alpha=1, size=2, position = position_dodge(dodge)) +
+    #scale_shape_manual(values = c( 19, 10 ,1 ))+
+    scale_fill_manual(values=cd14pos_colors_h3)+
+  theme(
+        axis.title.y=element_blank(),
+        axis.text.x = element_blank(), #element_text(angle=45, vjust = 1, hjust = 1),
+        axis.title.x = element_blank(),
+        panel.background = element_blank(),
+        axis.line.y = element_line(),
+        axis.line.x = element_line(),
+        legend.position="none"
+    )
+}
+```
+
+
+# CM cohort
+
+## Calculate the percentage 
+
+```{r}
+group_cols <- c("Patient", "Cancer Type")
+
+cell_types <- c("CD8 T cells: CD14+",
+                "CD4 T cells: CD14+",
+                "Treg cells: CD14+")
+
+parent_type <- c("CD8 T cells",
+                 "CD4 T cells",
+                 "Treg cells")
+
+filter_type <- c("CD8 T cells",
+                 "CD4 T cells",
+                 "Treg cells")
+
+# calculate the proportions
+percentages_df <- calculate_cell_type_percentages(patient_counts_CM, group_cols, 
+                                                  cell_types, parent_type, 
+                                                  filter_types = filter_type)
+```
+
+```{r}
+# we need to filter out the proportions with less than 5 cells
+percentages_df <- percentages_df %>%
+    filter(filter_type_count >= 5)
+
+percentages_df <- percentages_df %>%
+    filter(parent_type_count>0)
+
+```
+
+## Plot CD8, CD4, Treg (Fig 4C(i))
+
+```{r}
+dodge <- 1
+run_name <- "CM_LUAD&LUSC_CD14subsets_no_compartments_Treg_instead_NK"
+
+do_boxplot_cd14pos_percentage(percentages_df, cd14pos_colors, dodge)+
+    facet_wrap(~ `Cancer Type`, nrow = 1, scales = "free_x")
+
+ggsave(file.path(output_folder, paste0(run_name, "_no_pvalue_boxplots.png")))
+
+percentages_df_luad <- percentages_df[percentages_df$`parent_Cancer Type` == "LUAD",]
+percentages_df_luad %>% group_by(percentage) %>% summarise(median = median(value))
+```
+
+## Major cell types (Fig 4A(i))
+
+```{r}
+patient_counts_CM <- patient_counts_CM %>% filter(`Cancer Type`=="LUAD")
+
+celltypes <- c(
+    "Dendritic cells: CD14+",
+    "Macrophages: CD14+",
+    "T cells: CD14+",
+    "B cells: CD14+",
+    "Granulocytes: CD14+",
+    "Mast cells: CD14+",
+    "NK cells: CD14+")
+
+denominators <- c(
+    "Dendritic cells",
+    "Macrophages",
+    "T cells",
+    "B cells",
+    "Granulocytes",
+    "Mast cells",
+    "NK cells")
+
+colors <- c(
+    "royalblue1",
+    "turquoise1",
+    "magenta1",
+    "red",
+    "seagreen1",
+    "greenyellow",
+    "salmon1")
+
+group_cols <- c("Patient")
+cell_types <- celltypes
+parent_type <- denominators
+filter_type <- parent_type
+
+# calculate the proportions
+percentages_df_test <- calculate_cell_type_percentages(patient_counts_CM, group_cols, 
+                                                  cell_types, parent_type,
+                                                  filter_types = filter_type)
+```
+
+filter out the proportions with less than 5 cells
+
+```{r}
+# we need to filter out the proportions with less than 5 cells
+percentages_df_test <- percentages_df_test %>%
+    filter(filter_type_count >= 5)
+
+percentages_df_test <- percentages_df_test %>%
+    filter(parent_type_count>0)
+```
+
+Plot 
+
+```{r}
+dodge <- 1
+run_name <- "LUAD_CD14Allsubsets_boxplots_no_compartments"
+
+percentages_df_test$percentage <- factor(percentages_df_test$percentage,
+                                    levels = unique(percentages_df_test$percentage))
+
+do_ordered_boxplot(percentages_df_test, colors, dodge)
+
+ggsave(file.path(output_folder, paste0(run_name, "_boxplots.png")))
+
+```
+
+
+# Sorin cohort
+
+## T cell subset
+
+### Prepare the data
+
+First, update cell type annotation to reflect CD14 status
+
+```{r}
+table(cell_info_sorin$CellType)
+
+cell_info_sorin$updCellType <- as.character(cell_info_sorin$CellType)
+cell_info_sorin$updCellType <- ifelse(cell_info_sorin$updCellType == "Th" &
+                                        cell_info_sorin$CD14status == "pos",
+                                      "ThCD14+", cell_info_sorin$updCellType)
+
+cell_info_sorin$updCellType <- ifelse(cell_info_sorin$updCellType == "Tc" &
+                                        cell_info_sorin$CD14status == "pos",
+                                      "TcCD14+", cell_info_sorin$updCellType)
+
+cell_info_sorin$updCellType <- ifelse(cell_info_sorin$updCellType == "NK cell" &
+                                        cell_info_sorin$CD14status == "pos",
+                                      "NK_CD14+", cell_info_sorin$updCellType)
+
+cell_info_sorin$updCellType <- ifelse(cell_info_sorin$updCellType == "Treg" &
+                                        cell_info_sorin$CD14status == "pos",
+                                      "Treg_CD14+", cell_info_sorin$updCellType)
+```
+
+Calculate the cell numbers per patient
+
+```{r}
+cell_info_sorin <- as.data.frame(cell_info_sorin)
+# First, count the occurrences of each cellType for each Patient
+patient_counts_Sorin <- cell_info_sorin %>%
+  group_by(Patient, CellType) %>%
+  summarize(count = n(), .groups = 'drop')
+
+# Reshape the data frame to have each cellType as a column
+patient_counts_Sorin <- patient_counts_Sorin %>%
+  spread(key = CellType, value = count, fill = 0)
+
+# Next, count the occurrences of each updCellType for each Patient
+patient_counts_with_cd14_Sorin <- cell_info_sorin %>%
+  group_by(Patient, updCellType) %>%
+  summarize(count = n(), .groups = 'drop')
+
+# Reshape the data frame to have each cellType as a column
+patient_counts_with_cd14_Sorin <- patient_counts_with_cd14_Sorin %>%
+  spread(key = updCellType, value = count, fill = 0)
+
+# Merge
+df_counts_Sorin <- patient_counts_with_cd14_Sorin %>% 
+  select(., contains("Patient") | ends_with("CD14+")) %>% 
+  left_join(patient_counts_Sorin, ., by = "Patient")
+```
+
+### Calcilate percentage
+
+```{r}
+group_cols <- c("Patient")
+
+cell_types <- c("TcCD14+",
+                "ThCD14+",
+                "Treg_CD14+")
+
+parent_type <- c("Tc",
+                 "Th",
+                 "Treg")
+
+filter_type <- parent_type
+
+# calculate the proportions
+percentages_df <- calculate_cell_type_percentages(df_counts_Sorin, group_cols, 
+                                                  cell_types, parent_type,
+                                                  filter_types = filter_type)
+```
+
+```{r}
+# we need to filter out the proportions with less than 5 cells
+percentages_df <- percentages_df %>%
+    filter(filter_type_count >= 5)
+
+percentages_df <- percentages_df %>%
+    filter(parent_type_count>0)
+
+```
+
+### Plot Th, Tc, Treg (Fig4C(ii))
+
+```{r}
+dodge <- 1
+run_name <- "Sorin_CD14subsets_Tcells_only"
+
+percentages_df$percentage <- factor(percentages_df$percentage,
+                                    levels = c("(ThCD14+/Th)%", "(TcCD14+/Tc)%", "(Treg_CD14+/Treg)%"))
+
+do_boxplot_cd14pos_percentage(percentages_df, cd14pos_colors, dodge)
+
+ggsave(file.path(output_folder, paste0(run_name, "_no_pvalue_boxplots.png")))
+```
+
+## Major cell types (Fig4A)
+
+> Figure 4 : I will need for Sorin the % of CD14+ cells in T cells (combine the T cells together as you did for Fig3), 
+B cells, macro (combine the macro together as you did for Fig3), neutron, mast cells, DC, mono (combine the mono together as you did for Fig3), using the colours I have used for my cohort
+
+
+### Prepare the data
+
+Senity check
+
+```{r}
+table(cell_info_sorin$CellType_h3[cell_info_sorin$CellType_h3 == "T cell"],
+      cell_info_sorin$CellType[cell_info_sorin$CellType_h3 == "T cell"])
+
+table(cell_info_sorin$CellType_h3[cell_info_sorin$CellType_h3 == "Macrophages"],
+      cell_info_sorin$CellType[cell_info_sorin$CellType_h3 == "Macrophages"])
+
+table(cell_info_sorin$CellType_h3[cell_info_sorin$CellType_h3 == "Monocytes"],
+      cell_info_sorin$CellType[cell_info_sorin$CellType_h3 == "Monocytes"])
+
+
+```
+
+```{r}
+# First, count the occurrences of each cellType for each Patient
+patient_counts_Sorin <- cell_info_sorin %>%
+  group_by(Patient, CellType_h3) %>%
+  summarize(count = n(), .groups = 'drop')
+
+# Reshape the data frame to have each cellType as a column
+patient_counts_Sorin <- patient_counts_Sorin %>%
+  spread(key = CellType_h3, value = count, fill = 0)
+```
+
+```{r}
+cell_types_of_interest <- c(
+    "B cell",
+    "T cell", 
+    "Macrophages",
+    "Monocytes",
+    "Neutrophils", 
+    "Mast cell", 
+    "DCs cell",
+    "NK cell"
+    )
+
+cell_info_sorin$updCellType_h3 <- as.character(cell_info_sorin$CellType_h3)
+for (cell_type in cell_types_of_interest) {
+  cell_info_sorin$updCellType_h3 <- ifelse(cell_info_sorin$updCellType_h3 == cell_type &
+                                        cell_info_sorin$CD14status == "pos",
+                                      paste0(cell_type,"CD14+"), 
+                                      cell_info_sorin$updCellType_h3)
+}
+```
+
+```{r}
+# Next, count the occurrences of each updCellType for each Patient
+patient_counts_with_cd14_Sorin <- cell_info_sorin %>%
+  group_by(Patient, updCellType_h3) %>%
+  summarize(count = n(), .groups = 'drop')
+
+# Reshape the data frame to have each cellType as a column
+patient_counts_with_cd14_Sorin <- patient_counts_with_cd14_Sorin %>%
+  spread(key = updCellType_h3, value = count, fill = 0)
+
+# Merge
+df_counts_Sorin <- patient_counts_with_cd14_Sorin %>% 
+  select(., contains("Patient") | ends_with("CD14+")) %>% 
+  left_join(patient_counts_Sorin, ., by = "Patient")
+```
+
+
+### Calcilate percentage
+
+```{r}
+group_cols <- c("Patient")
+
+cell_types <- paste0(cell_types_of_interest, "CD14+")
+
+parent_type <- cell_types_of_interest
+
+filter_type <- parent_type
+
+# calculate the proportions
+percentages_df <- calculate_cell_type_percentages(df_counts_Sorin, group_cols, 
+                                                  cell_types, parent_type,
+                                                  filter_types = filter_type)
+```
+
+```{r}
+# we need to filter out the proportions with less than 5 cells
+percentages_df <- percentages_df %>%
+    filter(filter_type_count >= 5)
+
+percentages_df <- percentages_df %>%
+    filter(parent_type_count>0)
+
+```
+
+### Plot (Supp Fig 4C(ii))
+
+```{r}
+dodge <- 1
+run_name <- "Sorin_CD14subsets_h3"
+
+percentages_df$percentage <- factor(percentages_df$percentage,
+                                    levels = unique(percentages_df$percentage))
+
+cd14pos_colors_h3 <- c(
+    "red",
+    "magenta1",
+    "turquoise1",
+    "#41b6c4",
+    "seagreen1",
+    "greenyellow",
+    "royalblue1",
+    "salmon1"
+    )
+
+#Here we need to reorder by median value
+do_ordered_boxplot(percentages_df, cd14pos_colors_h3, dodge)
+
+ggsave(file.path(output_folder, paste0(run_name, "_no_pvalue_boxplots.png")))
+```
+
+
+
+
+> For Fig 4, A, we need to add NK in our cohort and Sorin (and I will put LUSC in supp). 
+
+> For C (I) I will remove LUSC to put in supp (nned to remove NK and dd treg), for both (I) and (II) remove NK cells and add Treg
+

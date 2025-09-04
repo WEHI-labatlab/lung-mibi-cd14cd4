@@ -1,0 +1,154 @@
+---
+subtitle: "Figure 3D"
+title: "Volcano plot: LLM vs M (CN clusters)"
+author: "Ilariya Tarasova, Kenta Yokote"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    toc_collapsed: true
+    code_folding: hide
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+# Global knitting options (suppress messages, keep code visible in HTML)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+# Load core packages for wrangling, plotting, and tidy workflows
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(readr)
+  library(stringr)
+  library(glue)
+  library(purrr)
+})
+```
+
+```{r}
+# ---- External functions
+# calculate_cell_type_percentages() from Kenta
+source("../../src/calculate_cell_type_percentages.R")
+```
+
+# Data input
+
+```{r}
+# Read patient-level counts with CN spatial clusters
+patient_counts <- readRDS("../../Figure2/interim_data/patient_counts_compartment_3_CN_spatial_clusters_df.rds")
+
+# Read immune subgroup assignments per patient (M vs LLM)
+CM_LUAD_immune_subgroups <- readRDS("../../data/CM_LUAD_immune_subgroups.rds")
+```
+
+```{r}
+# Restrict to LUAD patients only and map immune subgroup labels
+patient_counts <- patient_counts %>% 
+  filter(`Cancer Type` == "LUAD") %>%
+  mutate(
+    ImmuneSubgroups = CM_LUAD_immune_subgroups$cluster[
+      match(Patient, CM_LUAD_immune_subgroups$patient)
+    ],
+    ImmuneSubgroups = ifelse(ImmuneSubgroups == "M", "M", "LLM"),
+    ImmuneSubgroups = factor(ImmuneSubgroups, levels = c("LLM", "M"))
+  )
+```
+
+# Percentage calculation
+
+```{r}
+# Define grouping variables (patient, subgroup, and 3-compartment annotation)
+group_cols  <- c("Patient", "ImmuneSubgroups", "Compartment (3)")
+
+# Define comparison groups (LLM vs M)
+vars <- c("LLM", "M")
+
+# Define CN cluster IDs
+cell_types  <- as.character(1:7)
+parent_type <- "CN"
+
+# Fixed color palette for CN clusters (consistent across figures)
+cn_colors <- c("chocolate4","goldenrod1","seagreen1",
+               "turquoise1","cyan4","darkorange2","red")
+#names(cn_colors) <- cell_types
+```
+
+```{r}
+# Calculate per-patient percentages for each CN cluster
+percentages_df <- calculate_cell_type_percentages(
+  patient_counts,
+  group_cols = group_cols,
+  cell_types = cell_types,
+  parent_type = parent_type
+)
+
+# Filter out strata with < 5 parent cells (QC filter)
+percentages_df <- percentages_df %>%
+  filter(parent_type_count >= 5)
+```
+
+# Statistical testing
+
+```{r}
+# Compute mean percentages per group, then log2FC = log2(LLM / M)
+summary_df <- percentages_df %>%
+  group_by(ImmuneSubgroups, `Compartment (3)`, percentage) %>%
+  summarise(mean_pct = mean(value, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = ImmuneSubgroups, values_from = mean_pct) %>%
+  mutate(log2FC = log2( (LLM) / (M) ))
+
+# Run Wilcoxon test for each CN cluster within compartments
+pvals <- percentages_df %>%
+  group_by(`Compartment (3)`, percentage) %>%
+  summarise(
+    p.value = tryCatch(
+      stats::wilcox.test(value ~ ImmuneSubgroups)$p.value,
+      error = function(e) NA_real_
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(p.adj = p.adjust(p.value, method = "BH"))  # FDR correction
+
+# Join test results back to summary table
+summary_df <- summary_df %>%
+  left_join(pvals, by = c("Compartment (3)", "percentage"))
+
+```
+
+# Volcano plot
+
+```{r}
+# Volcano plot of LLM vs M differences across CN clusters
+xlim_val      <- 5
+alpha_nominal <- 0.05
+
+ggplot(summary_df, aes(x = log2FC, y = -log10(p.value), color = percentage)) +
+  geom_hline(yintercept = -log10(alpha_nominal), linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_point(aes(shape = `Compartment (3)`), size = 3, na.rm = TRUE) +
+  scale_color_manual(values = cn_colors, name = "CN cluster") +
+  scale_x_continuous(
+    breaks = seq(-xlim_val, xlim_val, by = 1),
+    limits = c(-xlim_val, xlim_val)
+  ) +
+  labs(
+    x = "log2FC (LLM / M)",
+    y = expression(-log[10](p[value]))
+  ) +
+  theme(
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    axis.line = element_line(colour = "black"),
+    legend.title = element_text(size = 10),
+    legend.text  = element_text(size = 9)
+  )
+
+```
+

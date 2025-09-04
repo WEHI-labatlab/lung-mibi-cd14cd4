@@ -1,0 +1,164 @@
+---
+subtitle: "LLM vs M CN clusters"
+title: "Figure 3"
+author: "Claire, Marceaux"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA, prompt = T, warning = F, message=F)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(ggplot2)
+library(patchwork)
+library(RColorBrewer)
+library(dplyr)
+library(tidyr)
+```
+
+# Preparation
+
+## Read the data
+
+```{r}
+patient_counts <- readRDS(file="../../data/CM_patient_counts_compartment_3_CN_spatial_clusters_df.rds")
+CM_LUAD_immune_subgr <- readRDS(file = "../../data/CM_LUAD_immune_subgroups.rds")
+```
+
+## Source the functions
+
+```{r source_functions}
+source('../../src/calculate_cell_type_percentages.R')
+```
+
+## Set the output folder
+
+```{r}
+output_folder <- "../plots/"
+```
+
+# CM_LUAD
+
+
+## Prepare the data
+
+```{r}
+patient_counts <- patient_counts %>% filter(`Cancer Type`=="LUAD")
+patient_counts$immuneSubgroups <- CM_LUAD_immune_subgr$cluster[match(patient_counts$Patient,
+                                                                     CM_LUAD_immune_subgr$patient)]
+
+patient_counts$immuneSubgroups <- as.character(patient_counts$immuneSubgroups)
+patient_counts$immuneSubgroups[patient_counts$immuneSubgroups != "M"] <- "LLM"
+```
+
+## calculate the percentages
+
+```{r}
+# the grouping variable
+group_cols <- c("Patient", "immuneSubgroups", "Compartment (3)")
+
+# the group types. Must be 2
+vars <- c("LLM", "M")
+
+# proportion columns
+cell_types <- c(
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+)
+cell_types <- as.character(cell_types)
+
+parent_type <- "CN"
+
+colors <- c(
+    "chocolate4",
+    "goldenrod1",
+    "seagreen1",
+    "turquoise1",
+    "cyan4",
+    "darkorange2",
+    "red"
+)
+```
+
+
+```{r}
+percentages_df <- calculate_cell_type_percentages(patient_counts, group_cols, cell_types, parent_type)
+
+# we need to filter out the percentages with less than 5 of epithelial cells
+percentages_df <- percentages_df %>% 
+    filter(parent_type_count >= 5)
+
+summary_df <- percentages_df %>%
+    group_by_at(c("immuneSubgroups", "Compartment (3)", "percentage")) %>%
+    summarise(mean = mean(value)) %>%
+    pivot_wider(names_from = immuneSubgroups, values_from = "mean") %>%
+    mutate(log2FC = log2(.data[[vars[[1]]]]/.data[[vars[[2]]]]))
+
+```
+
+## calculate p values
+
+```{r}
+p.values <- percentages_df %>%
+    group_by_at(c("Compartment (3)", "percentage")) %>%
+    group_modify(~{
+        return(data.frame(p.value=wilcox.test(value ~ immuneSubgroups, .x, exact=FALSE)$p.value))
+    })
+
+
+
+summary_df$index <- paste(summary_df$`Compartment (3)`, summary_df$percentage)
+p.values$index <- paste(p.values$`Compartment (3)`, p.values$percentage)
+
+summary_df <- cbind(summary_df, p.values[match(summary_df$index, p.values$index), "p.value"])
+
+
+summary_df$percentage <- factor(summary_df$percentage, levels = unique(summary_df$percentage))
+```
+
+## Plot volcano
+
+```{r}
+xlim <- 5
+ggplot(summary_df, aes(x=log2FC, y=-log10(p.value), color=percentage)) +
+    geom_point(size=4, aes(shape=`Compartment (3)`)) + 
+    # scale_color_manual(values = colors) +
+    geom_vline(xintercept=0, linetype="dashed") + 
+    scale_x_continuous(breaks = round(seq(-xlim, xlim, by = 0.5),1), limits = c(-xlim, xlim)) + 
+    ylim(c(-0.05, 4))+
+    # xlim(c(-1.5, 1.5))+
+    geom_hline(yintercept = -log10(0.05), linetype="dashed") +
+    xlab("log2FC(LLM/M)") + 
+    scale_color_manual(values=colors)+
+    theme(
+        axis.title.y=element_blank(),
+        # axis.text.y=element_blank(),
+        # axis.title.x = element_blank(),
+        # axis.ticks.y=element_blank(),
+        strip.text.y = element_blank(),
+        panel.background = element_blank(),
+        # legend.position = "none",
+        axis.line = element_line(colour = "black")
+    )
+ggsave(file.path(output_folder, paste0("volcano_plot_LLMvsM_CNclusters.png")))
+
+
+```
+

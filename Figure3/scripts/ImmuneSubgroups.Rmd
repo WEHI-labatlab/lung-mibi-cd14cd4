@@ -1,0 +1,412 @@
+---
+subtitle: "Immune subgroups"
+title: "Figure 3"
+author: "Claire, Marceaux, Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA, prompt = T, warning = F, message=F)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(ggplot2)
+library(patchwork)
+library(pheatmap)
+library(RColorBrewer)
+library(dplyr)
+library(tidyr)
+library(survival)
+library(survminer)
+```
+
+# Preparation
+
+In this file we calculate the percentage of lymphoid (L) and myeloid (M) cells relative to the total Immune cell number in patients with LUAD (all threee cohorts). After that we split the patients in 3 groups (L, M and LM) using k-mean clustering.
+
+Next, we calculate the percentages of immune cell type in each patient relative to the total Immune cell number and plot a heatmap of these values for each LUAD cohort.
+In Sorin we also investigate survival of patients with high level of Neutrophils.
+
+## Read the data
+
+```{r}
+cells_Enfield <- readRDS(file="../../data/Enfield_tumor_cells_info.rds")
+patient_survival_Enfield <- readRDS(file="../../data/Enfield_patient_survival.rds")
+patient_counts_Sorin <- readRDS(file="../../data/Sorin_full_patient_info.rds")
+patient_counts_CM <- readRDS(file="../../data/CM_patient_counts_no_compartment_all_FM_TRM_df.rds")
+```
+
+## Source the functions
+
+```{r source_functions}
+source('../../src/calculate_cell_type_percentages.R')
+source('../../src/plot_heatmap_immune_subgroups.R')
+#source the colors
+immune_subgroup_colors <- readRDS("../../data/immune_subgroup_colors.rds")
+```
+
+## Set the output folder
+
+```{r}
+output_folder <- "../plots/"
+```
+
+# CM_LUAD
+
+## Prepare the data
+
+```{r}
+cohort <- "CM"
+CM_patient_counts_NSCLC_LUAD <-patient_counts_CM %>% 
+    filter(patient_counts_CM$`Cancer Type`=="LUAD")
+```
+
+```{r}
+CM_percentage_LUAD <- CM_patient_counts_NSCLC_LUAD %>%
+  filter(`Immune cells` >= 5) %>%
+  transmute(
+    Patient = Patient,
+    PercentageLymphoidCells = (`Lymphoid cells` / `Immune cells`) * 100,
+    PercentageMyeloidCells = (`Myeloid cells` / `Immune cells`) * 100
+  )
+```
+
+## Clustering with kmean 3
+
+```{r}
+pm <- as.matrix(CM_percentage_LUAD[,-1], rownames.force = T)
+rownames(pm) <- CM_percentage_LUAD[,1]
+
+set.seed(42)
+kmean_res3 <- kmeans(pm, centers = 3, nstart = 25)
+
+CM_percentage_LUAD$kmean_cluster3 <- as.factor(kmean_res3$cluster)
+CM_patient_counts_NSCLC_LUAD$kmean_cluster3 <- as.factor(kmean_res3$cluster)
+levels(CM_percentage_LUAD$kmean_cluster3) <- c("LM", "M", "L")
+levels(CM_patient_counts_NSCLC_LUAD$kmean_cluster3) <- c("LM", "M", "L")
+```
+
+## Heatmap for immune subgroups
+
+```{r fig.height= 5, fig.width= 10}
+# re-order levels to make sure that it's correct for plotting
+CM_percentage_LUAD$kmean_cluster3 <- factor(CM_percentage_LUAD$kmean_cluster3, levels = c("L", "LM", "M"))
+
+order_of_patients <- plot_immune_subgr_heatmap(CM_percentage_LUAD, kmean_column = "kmean_cluster3", 
+                          percentage_matrix = pm, cohort = "CM_LUAD", immune_subgroup_colors, output_folder)
+saveRDS(order_of_patients, file = "../../data/CM_LUAD_immune_subgroups.rds")
+```
+
+## Heatmap for cell types
+
+Prepare the data 
+
+```{r}
+CM_patient_counts_NSCLC_LUAD$ImmuneSubgroups <- CM_patient_counts_NSCLC_LUAD$kmean_cluster3
+table(CM_patient_counts_NSCLC_LUAD$ImmuneSubgroups)
+
+group_cols <- c("Patient", "Cancer Type", "ImmuneSubgroups")
+# the order of the cell types will be preserved further in heatmap
+lymphoid_cells <- c(
+  "T cells",
+    "B cells",
+    "NK cells"
+  )
+
+myeloid_cells <- c(
+    "Macrophages", 
+    "Granulocytes", 
+    "Mast cells", 
+    "Dendritic cells"
+    )
+
+cell_types <- c(lymphoid_cells, myeloid_cells)
+
+parent_type <- "Immune cells"
+```
+
+Run the function to calculate percentages
+
+```{r}
+# calculate the percentages
+percentages_df <- calculate_cell_type_percentages(CM_patient_counts_NSCLC_LUAD,
+                                                  group_cols, cell_types, parent_type)
+```
+
+```{r fig.height= 5, fig.width= 10}
+plot_cell_type_heatmap(percentages_df,
+                                   CancerType = "LUAD",
+                                   order_of_patients,
+                                   cohort = cohort,
+                                   colors = immune_subgroup_colors,
+                                   output_folder)
+saveRDS(percentages_df, file = paste0("../interim_data/",cohort,"_immune_cell_percentages.rds"))
+```
+
+# Sorin_LUAD
+
+## Prepare the data
+
+Create a column with total of cells
+```{r}
+cohort <- "Sorin"
+patient_counts_Sorin <- patient_counts_Sorin %>% mutate(TotalCells = rowSums(.[,2:18]))
+```
+
+Create columns with immune cells
+```{r}
+patient_counts_Sorin <- patient_counts_Sorin %>% mutate(ImmuneCells = rowSums(select(.,3,4,5,6,8,9,10,11,12,13,14,15,16,17 )))
+
+#Create a column with lymphoid cells
+patient_counts_Sorin <- patient_counts_Sorin %>% mutate(LymphoidCells = rowSums(select(.,3,5,9,10,11,12)))
+patient_counts_Sorin <- patient_counts_Sorin %>% mutate(TCells = rowSums(select(.,9,10,11,12)))
+
+# Create columns with myeloid cells
+patient_counts_Sorin <- patient_counts_Sorin %>% mutate(MyeloidCells = rowSums(select(.,4,6,8,13,14,15,16,17)),
+                                                        Macrophages = rowSums(select(.,13,14)),
+                                                        Monocytes = rowSums(select(.,15,16,17)))
+```
+
+Calculate the percentage of Lymphoid and Myeloid cells of the total Immune
+```{r}
+percentage_Sorin <- patient_counts_Sorin %>%
+  filter(ImmuneCells >= 5) %>%
+  transmute(
+    SampleId = SampleId,
+    PercentageLymphoidCells = (LymphoidCells / ImmuneCells) * 100,
+    PercentageMyeloidCells = (MyeloidCells / ImmuneCells) * 100
+  )
+```
+
+## Clustering with kmean 3
+
+```{r}
+pm2 <- as.matrix(percentage_Sorin[,-1], rownames.force = T)
+rownames(pm2) <- percentage_Sorin[,1]
+
+set.seed(42)
+kmean_res3 <- kmeans(pm2, centers = 3, nstart = 25)
+percentage_Sorin$kmean_cluster3 <- as.factor(kmean_res3$cluster)
+levels(percentage_Sorin$kmean_cluster3) <- c("LM", "M", "L")
+```
+
+## Heatmap for immune subgroups
+
+```{r Heatmaps_unscaled3, fig.height= 5, fig.width= 15}
+# re-order levels to make sure that it's correct for plotting
+percentage_Sorin$kmean_cluster3 <- factor(percentage_Sorin$kmean_cluster3, levels = c("L", "LM", "M"))
+
+order_of_patients <- plot_immune_subgr_heatmap(percentage_Sorin, kmean_column = "kmean_cluster3", 
+                          percentage_matrix = pm2, cohort = "Sorin_LUAD", immune_subgroup_colors, output_folder)
+saveRDS(order_of_patients, file = "../../data/Sorin_LUAD_immune_subgroups.rds")
+```
+
+## Heatmap for cell types
+
+Prepare the data 
+
+```{r}
+patient_counts_Sorin$ImmuneSubgroups <- percentage_Sorin$kmean_cluster3[match(patient_counts_Sorin$SampleId,
+                                                                              percentage_Sorin$SampleId)]
+table(patient_counts_Sorin$ImmuneSubgroups)
+
+group_cols <- c("SampleId", "ImmuneSubgroups")
+# the order of the cell types will be preserved further in heatmap
+lymphoid_cells <- c("TCells", "B cell", "NK cell")
+myeloid_cells <- c("Macrophages", "Neutrophils","Mast cell",  "DCs cell", "Monocytes") 
+cell_types <- c(lymphoid_cells, myeloid_cells)
+
+parent_type <- "ImmuneCells"
+```
+
+Run the function 
+
+```{r}
+# calculate the percentages
+percentages_df <- calculate_cell_type_percentages(patient_counts_Sorin,
+                                                  group_cols, cell_types, parent_type)
+colnames(percentages_df)[1] <- "Patient"
+```
+
+### Getting patients with high percentage of Neutrophils
+
+```{r}
+plot(hist(percentages_df$value[percentages_df$cell_type == "Neutrophils"]))
+abline(v = 20, col = "red")
+patients_with_high_Neutr <- percentages_df$Patient[percentages_df$value > 20 &
+                                                      percentages_df$cell_type == "Neutrophils"]
+# save the file to use it in survival analysis later
+saveRDS(patients_with_high_Neutr, file = "../interim_data/patients_with_high_Neutr_Sorin.rds")
+```
+
+
+```{r fig.height= 10, fig.width= 15}
+plot_cell_type_heatmap(percentages_df, CancerType = "LUAD", 
+                       order_of_patients, cohort, 
+                       colors = immune_subgroup_colors, output_folder)
+saveRDS(percentages_df, file = paste0("../interim_data/",cohort,"_immune_cell_percentages.rds"))
+```
+
+
+# Enfield_LUAD
+
+## Prepare the data
+
+Create a per patient and per region data frame summary
+```{r}
+cohort <- "Enfield"
+# First, count the occurrences of each majorType for each Patient
+patient_counts_Enfield <- cells_Enfield %>%
+  group_by(Patient, majorType) %>%
+  summarize(count = n(), .groups = 'drop')
+
+# Reshape the data frame to have each majorType as a column
+patient_counts_Enfield <- patient_counts_Enfield %>%
+  spread(key = majorType, value = count, fill = 0)
+```
+
+work only on patient count for now to see if enough
+Create a column with total of cells
+```{r}
+patient_counts_Enfield <- patient_counts_Enfield %>% mutate(TotalCells = rowSums(.[,2:12]))
+```
+
+Create columns with immune cells
+
+```{r}
+patient_counts_Enfield <- patient_counts_Enfield %>% mutate(ImmuneCells = rowSums(select(.,3,4,5,8,9,10,11)),
+                                                            LymphoidCells = rowSums(select(.,3,4,5,11)),
+                                                            MyeloidCells = rowSums(select(.,8,9,10)),
+                                                            TCells = rowSums(select(.,4,5,11)))
+```
+
+Calculate the percentage of Lymphoid and Myeloid cells of the total Immune
+```{r}
+percentage_Enfield <- patient_counts_Enfield %>%
+  filter(ImmuneCells >= 5) %>%
+  transmute(
+    Patient = Patient,
+    PercentageLymphoidCells = (LymphoidCells / ImmuneCells) * 100,
+    PercentageMyeloidCells = (MyeloidCells / ImmuneCells) * 100
+  )
+```
+
+Merge cancer type to then filter to keep only LUAD
+```{r}
+# Rename columns for easier handling (if necessary)
+names(patient_survival_Enfield)[names(patient_survival_Enfield) == "histology_multi_full_genomically.confirmed"] <- "cancerType"
+# Select only the necessary column from patient_survival
+patient_survival_subset <- patient_survival_Enfield[, c("cruk_id", "cancerType")]
+# Merge the data frames based on the matching columns
+percentage_Enfield_Cancer <- merge(percentage_Enfield, patient_survival_subset,
+                     by.x = "Patient", by.y = "cruk_id",
+                     all.x = TRUE)
+percentage_Enfield_LUAD <- percentage_Enfield_Cancer %>%
+  filter (cancerType=="LUAD")
+percentage_Enfield_LUAD <-percentage_Enfield_LUAD%>% select(-cancerType)
+```
+
+## Clustering with kmean 3
+
+```{r}
+pm3 <- as.matrix(percentage_Enfield_LUAD[,-1], rownames.force = T)
+rownames(pm3) <- percentage_Enfield_LUAD[,1]
+```
+
+```{r}
+set.seed(42)
+kmean_res3 <- kmeans(pm3, centers = 3, nstart = 25)
+
+percentage_Enfield_LUAD$kmean_cluster3 <- as.factor(kmean_res3$cluster)
+levels(percentage_Enfield_LUAD$kmean_cluster3) <- c("M", "LM", "L")
+```
+
+## Heatmap for immune subgroups
+
+```{r Heatmaps_unscaled, fig.height= 5, fig.width= 12}
+# re-order levels to make sure that it's correct for plotting
+percentage_Enfield_LUAD$kmean_cluster3 <- factor(percentage_Enfield_LUAD$kmean_cluster3, levels = c("L", "LM", "M"))
+
+order_of_patients <- plot_immune_subgr_heatmap(percentage_Enfield_LUAD, kmean_column = "kmean_cluster3", 
+                          percentage_matrix = pm3, cohort = "Enfield_LUAD", immune_subgroup_colors, output_folder)
+saveRDS(order_of_patients, file = "../../data/Enfield_LUAD_immune_subgroups.rds")
+```
+
+
+## Heatmap for cell types
+
+Prepare the data 
+Create a per patient per original cell type
+```{r}
+# First, count the occurrences of each cellType for each Patient
+patient_counts_Enfield <- cells_Enfield %>%
+  group_by(Patient, cellType) %>%
+  summarize(count = n(), .groups = 'drop')
+
+# Reshape the data frame to have each cellType as a column
+patient_counts_Enfield <- patient_counts_Enfield %>%
+  spread(key = cellType, value = count, fill = 0)
+```
+
+Create columns with immune cells
+
+```{r}
+patient_counts_Enfield <- patient_counts_Enfield %>% 
+  mutate(ImmuneCells = rowSums(select(.,!(contains("Ambiguous") | contains("Unassigned") |
+                                            contains("Patient") | starts_with("E")))),
+         TCells = rowSums(select(., contains("T cells") | contains("Trm") | contains("Tgd"))),
+         Bcells = rowSums(select(., starts_with("B cell") | contains("Plasma cells"))),
+         Macrophages =  rowSums(select(., ends_with("Macrophages")))
+         )
+
+```
+
+
+```{r}
+patient_counts_Enfield_LUAD <- patient_counts_Enfield[patient_counts_Enfield$Patient %in% percentage_Enfield_LUAD$Patient,]
+patient_counts_Enfield_LUAD$ImmuneSubgroups <- percentage_Enfield_LUAD$kmean_cluster3[match(patient_counts_Enfield_LUAD$Patient,
+                                                                              percentage_Enfield_LUAD$Patient)]
+table(patient_counts_Enfield_LUAD$ImmuneSubgroups)
+
+group_cols <- c("Patient", "ImmuneSubgroups")
+lymphoid_cells <- c("TCells", "Bcells")
+myeloid_cells <- c("Macrophages", "Neutrophils", "mDC","Monocytes") 
+cell_types <- c(lymphoid_cells, myeloid_cells)
+parent_type <- "ImmuneCells"
+```
+
+Run the function 
+
+```{r}
+# calculate the percentages
+percentages_df <- calculate_cell_type_percentages(as.data.frame(patient_counts_Enfield_LUAD),
+                                                  group_cols, cell_types, parent_type)
+```
+
+```{r fig.height= 10, fig.width= 15}
+plot_cell_type_heatmap(percentages_df, CancerType = "LUAD", 
+                       order_of_patients, cohort = cohort, 
+                       colors = immune_subgroup_colors, output_folder)
+
+saveRDS(percentages_df, file = paste0("../interim_data/",cohort,"_immune_cell_percentages.rds"))
+```
+
+Getting patients with high percentage of Neutrophils
+
+```{r}
+plot(hist(percentages_df$value[percentages_df$cell_type == "Neutrophils"]))
+abline(v = 20, col = "red")
+patients_with_high_Neutr <- percentages_df$Patient[percentages_df$value > 20 &
+                                                      percentages_df$cell_type == "Neutrophils"]
+```

@@ -1,0 +1,601 @@
+---
+subtitle: "Survival curves"
+title: "Figure 3"
+author: "Claire, Marceaux, Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA, prompt = T, warning = F, message=F)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(ggplot2)
+library(RColorBrewer)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(survival)
+library(survminer)
+```
+
+# Preparation
+
+Here we are focusing on survival analysis:
+
+- OS = overall survival;
+- RFS = recurrence-free survival (available only for CM cohort)
+
+## Read the data
+
+```{r}
+patient_survival_Enfield <- readRDS(file="../../data/Enfield_patient_survival.rds")
+Percentage_Sorin_cohort <- readRDS("../../data/Percentage_Sorin_cohort.rds")
+patient_counts_CM <- readRDS(file="../../data/CM_patient_counts_no_compartment_all_FM_TRM_df.rds")
+
+CM_LUAD_immune_subgr <- readRDS(file = "../../data/CM_LUAD_immune_subgroups.rds")
+Sorin_LUAD_immune_subgr <- readRDS(file = "../../data/Sorin_LUAD_immune_subgroups.rds")
+Enfield_LUAD_immune_subgr <- readRDS(file = "../../data/Enfield_LUAD_immune_subgroups.rds")
+
+patients_with_high_Neutr <- readRDS(file = "../interim_data/patients_with_high_Neutr_Sorin.rds")
+```
+
+## Source the functions
+
+```{r source_functions}
+
+source('../../src/plot_heatmap_immune_subgroups.R')
+#source the colors
+immune_subgroup_colors <- readRDS("../../data/immune_subgroup_colors.rds")
+```
+
+## Set the output folder
+
+```{r}
+output_folder <- "../plots/"
+```
+
+
+# Functions 
+
+## Plotting Kaplan Meir curves
+
+```{r}
+survival_plot <- function(fit, data_fr, column, survival_type, output_folder, title_plot){
+  cols <- switch(column,
+                 "high_in_Neutr_subgr" = c(M_Neutr_high = "#0868ac", 
+                                           M_Neutr_low = "#43a2ca", 
+                                           LM = "goldenrod1", L = "tomato1"),
+                 "immuneSubgroups" = immune_subgroup_colors,
+                 "ThCD14_high" = c("magenta", "darkmagenta"))
+  
+  #show_risk_tbl <- switch(survival_type,
+  #                        "OS" = F,
+  #                        "RFS" = T)
+
+  plot_file_name = paste0(output_folder, paste0(title_plot, "_", survival_type, "_",column), ".jpg")
+  print(ggsurvplot(fit, 
+             palette = cols,
+             #risk.table = show_risk_tbl,
+             pval = T,
+             xlab = "Time in Years", 
+             ylab = "Survival Probability",
+             title = paste(title_plot, survival_type),
+              legend.title = "Immune subgroups",
+             legend.labs = levels(data_fr[[column]])
+             )
+    )
+  ggsave(file = plot_file_name,
+         width = 7, height = 7, units = "in")
+}
+```
+
+## Main function with stats
+
+```{r}
+do_survival_analysis <- function(data_fr, column, survival_type, output_folder, plot_title){
+  y <- switch(survival_type,
+              "OS" = "Surv(OS_years, Death)",
+              "RFS" = "Surv(RFS_years, Relapse)")
+  x <- column
+  form = as.formula(paste(y, "~", x))
+  fit <- surv_fit(form, data = data_fr)
+  survival_plot(fit, data_fr, column, survival_type, output_folder, plot_title)
+  
+  summary_fit <- summary(fit)
+  # Tidy data frame with medians per group
+  medians_df <- data.frame(
+    group = rownames(summary_fit$table),
+    median_survival = summary_fit$table[, "median"],
+    lower_ci = summary_fit$table[, "0.95LCL"],
+    upper_ci = summary_fit$table[, "0.95UCL"]
+  )
+  print(medians_df)
+  
+  # need to change reference level for stats
+  if(column == "immuneSubgroups"){
+    data_fr$immuneSubgroups <- factor(data_fr$immuneSubgroups, levels = c("M", "LM", "L"))
+  }
+  coxfit <- coxph(form, data = data_fr) 
+  
+  return(summary(coxfit))
+}
+```
+
+
+The `survfit()` function gives only one p-value from log rank test (two groups). To perform test between multiple groups, I used Cox Proportional Hazards regression model, implemented in `coxph()` function of the *survival* package. Taken from [here](https://www.biostars.org/p/401657/). 
+
+
+The hazard ratios (HRs) are given by:
+
++exp(coef), HR
++exp(-coef), HR flipped the other way
++lower .95, lower 95% CI of the HR
++upper .95, upper 95% CI of the HR
+
+
+
+# CM cohort
+
+## Prepare the table
+
+```{r}
+survival_CM_cohort <- patient_counts_CM[, c("Patient", "Cancer Type", 'Date of death',
+                                            'OS (days)', 'Vital status', 'RFS (days)', 'Relapse')]
+survival_CM_cohort <- survival_CM_cohort[!duplicated(survival_CM_cohort),]
+survival_CM_LUAD <- survival_CM_cohort[survival_CM_cohort$`Cancer Type` == "LUAD",]
+survival_CM_LUAD$immuneSubgroups <- CM_LUAD_immune_subgr$cluster[match(survival_CM_LUAD$Patient,
+                                                                                       CM_LUAD_immune_subgr$patient)]
+
+#new_col_names <- c("OS_years", "Death", "RFS_years", "Relapse")
+survival_CM_LUAD$OS_years <- round(survival_CM_LUAD$'OS (days)'/365.25, 2)
+survival_CM_LUAD$Death <- as.logical(survival_CM_LUAD$`Vital status`) # no invert here!
+survival_CM_LUAD$RFS_years <- round(survival_CM_LUAD$'RFS (days)'/365.25, 2)
+# sanity check here is NA in 'Date of death' column!
+head(survival_CM_LUAD)
+
+survival_CM_LUAD$immuneSubgroups <- factor(survival_CM_LUAD$immuneSubgroups, levels = c("L", "LM", "M"))
+```
+
+
+## OS LUAD
+
+```{r}
+table(survival_CM_LUAD$immuneSubgroups)
+
+do_survival_analysis(survival_CM_LUAD, "immuneSubgroups", "OS",
+                     output_folder, plot_title = "LUAD_CM")
+```
+
+## RFS LUAD
+
+```{r}
+table(is.na(survival_CM_LUAD$RFS_years), survival_CM_LUAD$immuneSubgroups)
+survival_CM_LUAD$Relapse <- as.logical(survival_CM_LUAD$Relapse)
+do_survival_analysis(survival_CM_LUAD, "immuneSubgroups", "RFS",
+                     output_folder, plot_title = "LUAD_CM")
+```
+
+```{r}
+surv_obj <- Surv(time = survival_CM_LUAD$RFS_years, event = as.logical(survival_CM_LUAD$Relapse))
+fit_km <- survfit(surv_obj ~ immuneSubgroups, data = survival_CM_LUAD)
+summary(fit_km)$table
+```
+
+## CD4CD14 high vs low in LLM
+
+```{r}
+Percentage_CM_cohort_Tumour_LLM_CD4CD14 <- readRDS("../../data/Percentage_CM_cohort_Tumour_LLM_CD4CD14.rds")
+survival_CM_LUAD_LLM <- survival_CM_LUAD[survival_CM_LUAD$immuneSubgroups != "M",]
+survival_CM_LUAD_LLM$ThCD14_high <- Percentage_CM_cohort_Tumour_LLM_CD4CD14$CD4CD14_high[match(survival_CM_LUAD_LLM$Patient,
+                                                                                                Percentage_CM_cohort_Tumour_LLM_CD4CD14$Patient)]
+table(survival_CM_LUAD_LLM$ThCD14_high, useNA = "ifany")
+```
+
+```{r}
+do_survival_analysis(survival_CM_LUAD_LLM,
+                     "ThCD14_high", "OS", output_folder, "CM_Tumour_LLM_CD4CD14high_low")
+```
+
+
+***
+
+# Sorin
+
+## Prepare the table
+
+```{r}
+survival_Sorin_cohort <- Percentage_Sorin_cohort[,c("Patient", "OS_years", "Death")]
+survival_Sorin_cohort <- survival_Sorin_cohort[!duplicated(survival_Sorin_cohort),]
+survival_Sorin_cohort$immuneSubgroups <- Sorin_LUAD_immune_subgr$cluster[match(survival_Sorin_cohort$Patient,
+                                                                                       Sorin_LUAD_immune_subgr$patient)]
+table(survival_Sorin_cohort$immuneSubgroups)
+survival_Sorin_cohort$immuneSubgroups <- factor(survival_Sorin_cohort$immuneSubgroups,
+                                                levels = c("L", "LM", "M"))
+```
+
+## OS (E (i))
+
+```{r}
+table(survival_Sorin_cohort$immuneSubgroups)
+
+do_survival_analysis(survival_Sorin_cohort, "immuneSubgroups", "OS",
+                     output_folder, plot_title = "All_cells_Sorin")
+```
+
+## Neutrophils high vs low in M (E (ii))
+
+```{r}
+survival_Sorin_cohort$high_in_Neutr <- ifelse(survival_Sorin_cohort$Patient %in% patients_with_high_Neutr,
+                                              "yes", "no")
+survival_Sorin_cohort$high_in_Neutr_subgr <- as.character(survival_Sorin_cohort$immuneSubgroups)
+# We are interested in patients from M subgroup that are high in Neutrophils
+survival_Sorin_cohort$high_in_Neutr_subgr <- ifelse(survival_Sorin_cohort$high_in_Neutr_subgr == "M" &
+                                                  survival_Sorin_cohort$high_in_Neutr == "yes",
+                                              "M_Neutr_high", survival_Sorin_cohort$high_in_Neutr_subgr)
+survival_Sorin_cohort$high_in_Neutr_subgr <- ifelse(survival_Sorin_cohort$high_in_Neutr_subgr == "M" &
+                                                  survival_Sorin_cohort$high_in_Neutr == "no",
+                                              "M_Neutr_low", survival_Sorin_cohort$high_in_Neutr_subgr)
+# the order of the levels are in the way that the first one is a reference level
+survival_Sorin_cohort$high_in_Neutr_subgr <- factor(survival_Sorin_cohort$high_in_Neutr_subgr,
+                                                    levels = c("M_Neutr_high" ,"M_Neutr_low","LM", "L"))
+```
+
+
+```{r}
+table(survival_Sorin_cohort$high_in_Neutr_subgr)
+
+do_survival_analysis(survival_Sorin_cohort, "high_in_Neutr_subgr", "OS",
+                     output_folder, "All_cells_Sorin")
+```
+
+## CD4CD14 high vs low (Fig 5)
+
+First we will read the percentage of CD4CD14 that was calculated for Figure 2 (in tumour only, all patients).
+
+```{r}
+Percentage_Sorin_cohort_Tumour_Th <- readRDS("../../Figure2/interim_data/Percentage_Sorin_cohort_Tumour_MLLM_CD4CD14.rds")
+threshold_Sorin_CD4CD14_Tumour <- mean(Percentage_Sorin_cohort_Tumour_Th$Percentage)
+threshold_Sorin_CD4CD14_Tumour
+#30.4
+Percentage_Sorin_cohort_Tumour_Th$ThCD14_high <- Percentage_Sorin_cohort_Tumour_Th$Percentage > threshold_Sorin_CD4CD14_Tumour
+survival_Sorin_cohort$ThCD14_high <- Percentage_Sorin_cohort_Tumour_Th$ThCD14_high[match(survival_Sorin_cohort$Patient,
+                                                                                       Percentage_Sorin_cohort_Tumour_Th$Patient)]
+survival_Sorin_cohort$Percentage <- Percentage_Sorin_cohort_Tumour_Th$Percentage[match(survival_Sorin_cohort$Patient,
+                                                                                       Percentage_Sorin_cohort_Tumour_Th$Patient)]
+print("Number of patients in each immune subgroups split by the ThCD14 status (TRUE = high)")
+table(survival_Sorin_cohort$immuneSubgroups, survival_Sorin_cohort$ThCD14_high)
+```    
+
+Do the mean of percentages of CD14 positive CD4 T cells differ in different immune subgroups?
+
+```{r}
+ggplot(survival_Sorin_cohort, aes(x=immuneSubgroups, y=Percentage, fill=immuneSubgroups)) +
+  geom_violin(trim = T)+
+  geom_dotplot(binaxis='y', stackdir='center')+
+  scale_fill_manual(values = immune_subgroup_colors)+
+  stat_summary(fun.y=mean, geom="crossbar",width = 0.5, color="#6a3d9a")+
+  geom_hline(aes(yintercept = threshold_Sorin_CD4CD14_Tumour))+
+  theme_pubclean()
+```
+Seems like no.
+
+```{r}
+do_survival_analysis(survival_Sorin_cohort, "ThCD14_high", "OS",
+                     output_folder, "Sorin_Tumour")
+
+do_survival_analysis(survival_Sorin_cohort[survival_Sorin_cohort$immuneSubgroups == "L",],
+                     "ThCD14_high", "OS", output_folder, "Sorin_Tumour_L_only")
+
+do_survival_analysis(survival_Sorin_cohort[survival_Sorin_cohort$immuneSubgroups == "LM",],
+                     "ThCD14_high", "OS", output_folder, "Sorin_Tumour_LM_only")
+
+do_survival_analysis(survival_Sorin_cohort[survival_Sorin_cohort$immuneSubgroups == "M",],
+                     "ThCD14_high", "OS", output_folder, "Sorin_Tumour_M_only")
+```
+
+### By stage
+
+First, get the data about stage: Stage (I-II: 0, III-IV:1)
+
+```{r}
+Sorin_full_patient_info <- readRDS("../../data/Sorin_full_patient_info.rds")
+
+survival_Sorin_cohort$Stage <- Sorin_full_patient_info$`Stage (I-II: 0, III-IV:1)`[match(survival_Sorin_cohort$Patient, Sorin_full_patient_info$SampleId)]
+table(survival_Sorin_cohort$Stage)
+
+table(survival_Sorin_cohort$Stage, survival_Sorin_cohort$immuneSubgroups)
+table(survival_Sorin_cohort$Stage, survival_Sorin_cohort$ThCD14_high)
+
+round(prop.table(table(survival_Sorin_cohort$Stage,
+                 as.character(survival_Sorin_cohort$immuneSubgroups)),
+                 margin = 2),
+      digits = 2)
+
+do_survival_analysis(survival_Sorin_cohort[survival_Sorin_cohort$Stage == 0,],
+                     "ThCD14_high", "OS", output_folder, "Sorin_Tumour_Stage12")
+
+do_survival_analysis(survival_Sorin_cohort[survival_Sorin_cohort$Stage == 1,],
+                     "ThCD14_high", "OS", output_folder, "Sorin_Tumour_Stage34")
+
+do_survival_analysis(survival_Sorin_cohort[survival_Sorin_cohort$Stage == 0 & survival_Sorin_cohort$immuneSubgroups == "L",],
+                     "ThCD14_high", "OS", output_folder, "Sorin_Tumour_Stage12_in_Lonly")
+
+do_survival_analysis(survival_Sorin_cohort[survival_Sorin_cohort$Stage == 1 & survival_Sorin_cohort$immuneSubgroups == "L",],
+                     "ThCD14_high", "OS", output_folder, "Sorin_Tumour_Stage34_in_Lonly")
+```
+
+### By histology
+
+```{r}
+survival_Sorin_cohort$histology <- Sorin_full_patient_info$`Predominant histological pattern (Lepidic:1, Papillary: 2, Acinar: 3, Micropapillary: 4, Solid: 5)`[match(survival_Sorin_cohort$Patient, Sorin_full_patient_info$SampleId)]
+
+
+survival_Sorin_cohort <- survival_Sorin_cohort %>% 
+  mutate(
+    hist =  case_when(
+    histology == 1 ~ "Lepidic",
+    histology == 2 ~ "Papillary",
+    histology == 3 ~ "Acinar",
+    histology == 4 ~ "Micropapillary",
+    histology == 5 ~ "Solid",
+    .default = as.character(histology)
+  )
+  )
+table(survival_Sorin_cohort$hist)
+```
+
+```{r}
+for (hist in unique(survival_Sorin_cohort$hist)) {
+  do_survival_analysis(survival_Sorin_cohort[survival_Sorin_cohort$hist == hist,],
+                     "ThCD14_high", "OS", output_folder, paste0("Sorin_Tumour_", hist))
+}
+```
+
+
+## Info for supp table 9
+
+Here Claire asked to take only L subgroup.
+
+```{r}
+sorin_L_CD14hign_vs_low <- survival_Sorin_cohort[survival_Sorin_cohort$immuneSubgroups == "L",
+                                                             c("Patient", "Percentage", "ThCD14_high")]
+
+#Sorin_full_patient_info <- Sorin_full_patient_info[,c(1, 19:28)]
+
+patient_info_sorinL <- left_join(sorin_L_CD14hign_vs_low, Sorin_full_patient_info, by = c("Patient" = "SampleId"))
+
+tab <- table(patient_info_sorinL$ThCD14_high, patient_info_sorinL$`Sex (Male: 0, Female: 1)`)
+fisher.test(tab)
+tab <- table(patient_info_sorinL$ThCD14_high, patient_info_sorinL$`Age (<75: 0, ≥75: 1)`)
+fisher.test(tab)
+tab <- table(patient_info_sorinL$ThCD14_high, patient_info_sorinL$`BMI (<30: 0, ≥30: 1)`)
+fisher.test(tab)
+tab <- table(patient_info_sorinL$ThCD14_high, patient_info_sorinL$`Smoking Status (Smoker: 0, Non-smoker:1)`)
+fisher.test(tab)
+tab <- table(patient_info_sorinL$ThCD14_high, patient_info_sorinL$`Stage (I-II: 0, III-IV:1)`)
+fisher.test(tab)
+
+
+cols_of_intr <- c('Sex (Male: 0, Female: 1)','Age (<75: 0, ≥75: 1)', 'BMI (<30: 0, ≥30: 1)',  'Smoking Status (Smoker: 0, Non-smoker:1)',
+                  'Stage (I-II: 0, III-IV:1)', 'Predominant histological pattern (Lepidic:1, Papillary: 2, Acinar: 3, Micropapillary: 4, Solid: 5)')
+
+for (col in cols_of_intr) {
+  tabe <- table(patient_info_sorinL$ThCD14_high, patient_info_sorinL[[col]])
+}
+
+# Total number of patients
+total_patients <- nrow(patient_info_sorinL)
+
+# Compute % of total for each category, stratified by ThCD14_high
+df_summary <- patient_info_sorinL %>%
+  group_by(ThCD14_high) %>%
+  summarise(
+    Patients_in_group = n(),
+    
+    Female_pct = sum(`Sex (Male: 0, Female: 1)` == 1) / Patients_in_group * 100,
+    Male_pct = sum(`Sex (Male: 0, Female: 1)` == 0) / Patients_in_group * 100,
+
+    Age75plus_pct = sum(`Age (<75: 0, ≥75: 1)` == 1) / Patients_in_group * 100,
+    AgeUnder75_pct = sum(`Age (<75: 0, ≥75: 1)` == 0) / Patients_in_group * 100,
+
+    BMI30plus_pct = sum(`BMI (<30: 0, ≥30: 1)` == 1) / Patients_in_group * 100,
+    BMIunder30_pct = sum(`BMI (<30: 0, ≥30: 1)` == 0) / Patients_in_group * 100,
+
+    Smoker_pct = sum(`Smoking Status (Smoker: 0, Non-smoker:1)` == 0) / Patients_in_group * 100,
+    NonSmoker_pct = sum(`Smoking Status (Smoker: 0, Non-smoker:1)` == 1) / Patients_in_group * 100,
+
+    Stage34_pct = sum(`Stage (I-II: 0, III-IV:1)` == 1) / Patients_in_group * 100,
+    Stage12_pct = sum(`Stage (I-II: 0, III-IV:1)` == 0) / Patients_in_group * 100
+  )
+
+df_summary
+
+# Create contingency table: rows = ThCD14_high, columns = sex (0 = Male, 1 = Female)
+tab <- table(patient_info_sorinL$ThCD14_high, patient_info_sorinL$`Sex (Male: 0, Female: 1)`)
+
+# Perform Fisher's Exact Test
+fisher.test(tab)
+
+patient_info_sorinL <- patient_info_sorinL
+hist_def <- colnames(patient_info_sorinL)[13]
+colnames(patient_info_sorinL)[startsWith(colnames(patient_info_sorinL), "Predominant")] <- "histology"
+patient_info_sorinL <- patient_info_sorinL %>% 
+  mutate(
+    hist =  case_when(
+    histology == 1 ~ "Lepidic",
+    histology == 2 ~ "Papillary",
+    histology == 3 ~ "Acinar",
+    histology == 4 ~ "Micropapillary",
+    histology == 5 ~ "Solid",
+    .default = as.character(histology)
+  )
+  )
+
+df_summary <- patient_info_sorinL %>%
+  group_by(ThCD14_high) %>%
+  summarise(
+    Patients_in_group = n(),
+
+    Lepidic_pct = sum(hist == "Lepidic") / Patients_in_group * 100,
+    Papillary_pct = sum(hist == "Papillary") / Patients_in_group * 100,
+    Acinar_pct = sum(hist == "Acinar") / Patients_in_group * 100,
+    Micropapillary_pct = sum(hist == "Micropapillary") / Patients_in_group * 100,
+    Solid_pct = sum(hist == "Solid") / Patients_in_group * 100
+  )
+
+# Create contingency table: rows = ThCD14_high, columns = sex (0 = Male, 1 = Female)
+tab <- table(patient_info_sorinL$ThCD14_high, patient_info_sorinL$hist)
+
+# Chi-squared test
+chisq.test(tab)
+
+ggplot(patient_info_sorinL, aes(x = ThCD14_high, fill = hist)) +
+  geom_bar(position = "fill") +  # shows proportions
+  ylab("Proportion") +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal()
+
+# Unique histology types
+types <- unique(patient_info_sorinL$hist)
+
+# Run Fisher's test for each histology type and collect p-values
+pvals <- map_dfr(types, function(h) {
+  # Create 2x2 table: rows = ThCD14_high, cols = this histology vs others
+  tab <- table(patient_info_sorinL$ThCD14_high, patient_info_sorinL$hist == h)
+
+  # Only run test if table has 2 rows and 2 columns
+  if (all(dim(tab) == c(2, 2))) {
+    p <- fisher.test(tab)$p.value
+  } else {
+    p <- NA
+  }
+
+  tibble(hist = h, p = p)
+}) %>%
+  mutate(p_adj = p.adjust(p, method = "BH"))
+
+pvals
+```
+
+***
+
+# Enfield
+
+## Prepare the table
+
+```{r}
+survival_Enfield_cohort <- patient_survival_Enfield[,c("cruk_id", "histology_multi_full",
+                                                       "os_time", "cens_os",
+                                                       "dfs_time", "cens_dfs")]
+
+survival_Enfield_cohort$OS_years <- round(survival_Enfield_cohort$os_time/365.25, 2)
+survival_Enfield_cohort$Death <- as.logical(survival_Enfield_cohort$cens_os) # censored 1=death, 0=alive
+survival_Enfield_cohort$RFS_years <- round(survival_Enfield_cohort$dfs_time/365.25, 2)
+survival_Enfield_cohort$Relapse <- as.logical(survival_Enfield_cohort$cens_dfs)
+
+head(survival_Enfield_cohort)
+table(patient_survival_Enfield$histology_multi_full)
+survival_Enfield_LUAD <- survival_Enfield_cohort[startsWith(survival_Enfield_cohort$histology_multi_full, "LUAD"),]
+
+survival_Enfield_LUAD$immuneSubgroups <- Enfield_LUAD_immune_subgr$cluster[match(survival_Enfield_LUAD$cruk_id,
+                                                                                       Enfield_LUAD_immune_subgr$patient)]
+survival_Enfield_LUAD$immuneSubgroups <- factor(survival_Enfield_LUAD$immuneSubgroups, levels = c("L", "LM", "M"))
+```
+
+## OS LUAD
+
+```{r}
+table(survival_Enfield_LUAD$immuneSubgroups)
+
+do_survival_analysis(survival_Enfield_LUAD, "immuneSubgroups", "OS",
+                     output_folder, plot_title = "LUAD_Enfield")
+```
+
+
+## RFS LUAD
+
+```{r}
+table(is.na(survival_Enfield_LUAD$RFS_years), survival_Enfield_LUAD$immuneSubgroups)
+
+do_survival_analysis(survival_Enfield_LUAD, "immuneSubgroups", "RFS",
+                     output_folder, plot_title = "LUAD_Enfield")
+```
+
+## CD4CD14 high vs low
+
+```{r}
+Percentage_Enfield_cohort_Tumour_CD4CD14 <- readRDS("../../Figure2/interim_data/Percentage_Enfield_cohort_Tumour_ThCD14.rds")
+threshold_Enfield_CD4CD14_Tumour <- mean(Percentage_Enfield_cohort_Tumour_CD4CD14$PercentageCD4CD14)
+threshold_Enfield_CD4CD14_Tumour
+
+survival_Enfield_LUAD_filt <- survival_Enfield_LUAD[survival_Enfield_LUAD$cruk_id %in% Percentage_Enfield_cohort_Tumour_CD4CD14$Patient,]
+
+survival_Enfield_LUAD_filt$PercentageCD4CD14 <- Percentage_Enfield_cohort_Tumour_CD4CD14$PercentageCD4CD14[match(
+  survival_Enfield_LUAD_filt$cruk_id, Percentage_Enfield_cohort_Tumour_CD4CD14$Patient
+)]
+
+survival_Enfield_LUAD_filt$ThCD14_high <- survival_Enfield_LUAD_filt$PercentageCD4CD14 > threshold_Enfield_CD4CD14_Tumour
+table(survival_Enfield_LUAD_filt$ThCD14_high, survival_Enfield_LUAD_filt$immuneSubgroups)
+```
+
+
+```{r}
+do_survival_analysis(survival_Enfield_LUAD_filt,
+                     "ThCD14_high", "OS", output_folder, "Enfield_Tumour_CD4CD14high_low")
+```
+
+
+***
+
+# All data sets together
+
+```{r}
+cols_of_intrest <- c("immuneSubgroups", "OS_years", "Death", "ThCD14_high")
+survival_CM_LUAD_LLM <- survival_CM_LUAD_LLM[, cols_of_intrest]
+#survival_CM_LUAD <- survival_CM_LUAD[, cols_of_intrest]
+survival_Sorin_cohort <- survival_Sorin_cohort[, cols_of_intrest]
+#survival_Enfield_LUAD <- survival_Enfield_LUAD[, cols_of_intrest]
+survival_Enfield_LUAD_filt <- survival_Enfield_LUAD_filt[,cols_of_intrest]
+
+survival_all <- rbind(survival_CM_LUAD_LLM, survival_Enfield_LUAD_filt, survival_Sorin_cohort)
+
+survival_LLM <- survival_all[survival_all$immuneSubgroups != "M",]
+
+#do_survival_analysis(survival_all, "immuneSubgroups", "OS",
+#                     output_folder, plot_title = "ALL_data_sets_together")
+```
+
+## Split by CD14+ high and low
+
+L+LM
+
+```{r}
+do_survival_analysis(survival_LLM,
+                     "ThCD14_high", "OS", output_folder, "ALL_datasets_LLM_CD4CD14high_low")
+```
+
+L only
+
+```{r}
+do_survival_analysis(survival_LLM[survival_LLM$immuneSubgroups == "L",],
+                     "ThCD14_high", "OS", output_folder, "ALL_datasets_L_only_CD4CD14high_low")
+```
+
+LM only
+
+```{r}
+do_survival_analysis(survival_LLM[survival_LLM$immuneSubgroups == "LM",],
+                     "ThCD14_high", "OS", output_folder, "ALL_datasets_LM_only_CD4CD14high_low")
+```

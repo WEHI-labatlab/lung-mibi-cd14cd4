@@ -1,0 +1,275 @@
+---
+subtitle: "Sorin only"
+title: "Look at the distances to CD14 positive T cells"
+author: "Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    keep-md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA, prompt = T, warning = F, message=F)
+options(width = 90, digits = 3)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+#library(knitr)
+library(tidyverse)
+library(patchwork)
+library(ggpubr)
+#library(qs)
+#library(imcRtools)
+#library(SpatialExperiment)
+```
+
+# Preparation
+
+```{r}
+output_folder <- "../plots/"
+if (!dir.exists(output_folder)){
+    dir.create(output_folder, recursive = T)
+}
+```
+
+## Loading data
+
+```{r}
+cell_info_sorin <- readRDS("../../data/Sorin_cell_info.rds")
+full_patient_info <- readRDS("../../data/Sorin_full_patient_info.rds")
+
+distToThCD14pos <- readRDS("../../data/Sorin_distToThCD14pos.rds")
+distToThCD14neg <- readRDS("../../data/Sorin_distToTh.rds")
+updCellType <- readRDS("../../data/updatedCellTypes_Sorin.rds")
+sorin_immune_subgr <- readRDS("../../data/Sorin_LUAD_immune_subgroups.rds")
+```
+
+## Incorporating distance data
+
+Distance data was calculated using *minDistToCells()* function from `imcRtools` package.
+https://bodenmillergroup.github.io/imcRtools/articles/imcRtools.html#minimal-distances-to-cells-of-interest
+Basicaly, it's a Minimal distances to cells of interest (CD14+ or CD14- T cell or Treg)
+
+
+```{r}
+cell_info_sorin$updCellType <- updCellType
+cell_info_sorin$distToThCD14pos <- distToThCD14pos
+cell_info_sorin$distToThCD14neg <- distToThCD14neg
+cell_info_sorin$immuneSubgroups <- sorin_immune_subgr$cluster[match(cell_info_sorin$Patient,sorin_immune_subgr$patient)]
+
+status <- "in & out tumour"
+cell_info_sorin <- as.data.frame(cell_info_sorin#[cell_info_sorin$InTumour,]
+                                )
+length(unique(cell_info_sorin$Patient)) # how many patients originally
+
+filtered_df <- cell_info_sorin %>%
+    group_by(Patient) %>%
+    summarise(ThCD14posCount = sum(updCellType == "ThCD14+")) %>%
+    filter(ThCD14posCount >= 5) %>%
+    left_join(cell_info_sorin, by = "Patient")
+length(unique(filtered_df$Patient)) # how many patients have more than 5 ThCD14+ cells
+
+cell_info_filt <- filtered_df[,c("Patient","CellType", "distToThCD14neg", "immuneSubgroups",
+                                    "updCellType", "distToThCD14pos", "CellType_h2")]
+```
+
+## Calculating percentages
+
+### Percentage in regards to all immune cells
+
+```{r}
+full_patient_info$immuneSubgroups <- sorin_immune_subgr$cluster[match(full_patient_info$SampleId,
+                                                                                       sorin_immune_subgr$patient)]
+
+LymphoidCells <- gsub(" ","",colnames(full_patient_info)[c(3,5,9,10,11,12)])
+colnames(full_patient_info)[c(3,5,9,10,11,12)] <- LymphoidCells
+MyeloidCells <- colnames(full_patient_info)[c(4,6,8,13,14,15,16,17)]
+MyeloidCells <- gsub(" ", "", MyeloidCells)
+MyeloidCells <- gsub("-", "", MyeloidCells)
+colnames(full_patient_info)[c(4,6,8,13,14,15,16,17)] <- MyeloidCells
+
+full_patient_info <- full_patient_info %>% mutate(ImmuneCells = rowSums(select(.,3,4,5,6,8,9,10,11,12,13,14,15,16,17)))
+
+full_percentage_Sorin <- full_patient_info %>%
+  filter(ImmuneCells >= 5) %>%
+  transmute(
+    Patient = SampleId,
+    immuneSubgroups = immuneSubgroups,
+    p_Neutro = (Neutrophils / ImmuneCells) * 100,
+    p_DCs = (DCscell / ImmuneCells) * 100,
+    p_Mast = (Mastcell / ImmuneCells) * 100,
+    p_ClMac = (ClMAC / ImmuneCells) * 100,
+    p_AltMac = (AltMAC / ImmuneCells) * 100,
+    p_ClMo = (ClMo / ImmuneCells) * 100,
+    p_NonClMo = (NonClMo / ImmuneCells) * 100,
+    p_IntMo = (IntMo / ImmuneCells) * 100,
+    
+    p_B = (Bcell / ImmuneCells) * 100,
+    p_NK = (NKcell / ImmuneCells) * 100,
+    p_Tc = (Tc / ImmuneCells) * 100,
+    p_Th = (Th / ImmuneCells) * 100,
+    p_Treg = (Treg / ImmuneCells) * 100,
+    p_Tother = (Tother / ImmuneCells) * 100
+  )
+```
+
+
+# Function for plotting 
+
+## Boxplots
+
+```{r}
+distance_boxplot <- function(cell_info_filt, distance, radius, sub_title){
+  cell_info_filt[[distance]][cell_info_filt[[distance]] < 0] <- 0
+  p <- cell_info_filt %>% 
+      filter(., CellType_h2 %in% c("Lymphoid cell", "Myeloid cell") &
+               .data[[distance]] < radius) %>% 
+      ggplot(., aes(x=reorder(updCellType, .data[[distance]], FUN = median), 
+                    y=.data[[distance]], fill = updCellType)) + 
+        geom_boxplot()+#geom_violin()+
+      scale_fill_manual(values=cd14pos_L_and_M_colors)+
+      #stat_compare_means(label = "p.signif", paired = T)+
+      labs(title = paste0("Sorin: cell types within radius ", radius),
+           subtitle = sub_title,
+           x = "Cell types")+
+    scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+      theme_bw()
+  #print(table(p$data$updCellType))
+  #print(paste0("Number of patients ", length(unique(p$data$Patient))))
+  return(p)
+}
+
+```
+
+Setting the colours
+
+```{r}
+
+cd14pos_L_and_M_colors <- c(
+  "Tc" = "#e7298a",
+  "Th" = "#d57cd4",
+  "TcCD14+" = "#f595d2",
+  "ThCD14+" = "#f4cff3",
+  "Treg" = "#fd693a",
+  "T other" = "#ce1256",
+  "B cell" = "red",
+  "NK cell" = "#8c6bb1",
+  "NK_CD14+" = "#88419d",
+  "Alt MAC" = "#5886a5",
+  "Cl MAC" = "#00cee6",
+  "Cl Mo" = "#00cbc9",
+  "Int Mo" = "#02a19e",
+  "Non-Cl Mo" = "#017976",
+  "Mast cell" = "greenyellow",
+  "Neutrophils" = "seagreen1",
+  "DCs cell" = "royalblue1"
+)
+
+cd14pos_all_colors <- c(cd14pos_L_and_M_colors,
+                          "Cancer" = "#525252",
+                        "Endothelial cell" = "#969696")
+```
+
+# Plot
+
+## Boxplots 
+
+```{r, fig.width=10}
+distTo <- "distToThCD14pos"
+full_filename <- file.path(output_folder, paste0("Boxplot_Sorin_", distTo,"_r50_L_immune_subgr.png"))
+
+p <- distance_boxplot(cell_info_filt[cell_info_filt$immuneSubgroups == "L",], 
+                 distance = distTo, radius=50, sub_title = paste("L only", status))
+ggsave(full_filename, p)
+p
+
+distTo <- "distToThCD14neg"
+full_filename <- file.path(output_folder, paste0("Boxplot_Sorin_", distTo,"_r50_L_immune_subgr.png"))
+p <- distance_boxplot(cell_info_filt[cell_info_filt$immuneSubgroups == "L",], 
+                 distance = distTo, radius=50, sub_title = paste("L only", status))
+ggsave(full_filename, p)
+p
+```
+
+
+## Scatter Plot
+
+L only
+
+### Prep & function
+
+```{r}
+prep_data <- cell_info_sorin %>% 
+      filter(., CellType_h2 %in% c("Lymphoid cell", "Myeloid cell")) %>% 
+  group_by(Patient, immuneSubgroups, updCellType) %>%
+  summarise(count = n()) %>% 
+   mutate(percentage = count/sum(count)*100) %>% # percentage relative to all immune cells
+   ungroup()
+
+test <-  prep_data %>% filter(immuneSubgroups == "L") 
+data_long_counts <- test %>% select(-percentage) %>% 
+  pivot_wider(., names_from = updCellType, values_from = count)
+data_long_percentage <- test %>% select(-count) %>% 
+  pivot_wider(., names_from = updCellType, values_from = percentage)
+```
+
+Plot function with Spearman correlation
+
+```{r}
+plot_cell_counts <- function(data_long, cell_type_of_intr, calc_units){  
+  data_long %>% 
+  ggplot(., aes(x =  `ThCD14+`,
+              y =  .data[[cell_type_of_intr]])) +
+  geom_point() +
+    geom_smooth(method='lm', formula= y~x)+
+    stat_cor(method = "spearman", cor.coef.name = "rho",
+           p.accuracy = 0.001, r.accuracy = 0.01, label.x.npc = "left")+
+  labs(title = paste0(calc_units, ": ", cell_type_of_intr, " vs. ThCD14+"),
+       subtitle = "Sorin all tissue, L immune subgr" ,
+       y = paste(cell_type_of_intr, calc_units),
+       x = paste("ThCD14+", calc_units)) +
+  theme_minimal()
+}
+```
+
+
+### Main
+
+```{r fig.width=12, fig.height=5}
+cl_mo <- plot_cell_counts(data_long_percentage, "Cl Mo", "Cell %")
+int_mo <- plot_cell_counts(data_long_percentage, "Int Mo", "Cell %")
+treg <- plot_cell_counts(data_long_percentage, "Treg", "Cell %")
+
+all3 <- cl_mo + int_mo + treg
+full_filename <- file.path(output_folder, paste0("Sorin_corr_cell_percentage_main.pdf"))
+ggsave(full_filename, all3, width = 12, height = 5)
+all3
+```
+
+### Suppl
+
+```{r fig.width=5, fig.height=5}
+all_cell_types <- unique(test$updCellType)
+not_main <- all_cell_types[- c(which(all_cell_types %in% c("Cl Mo", "Int Mo", "Treg", "ThCD14+")))]
+
+for (cell_t in not_main) {
+  full_filename <- file.path(output_folder, paste0("Sorin_corr_cell_percentage_",cell_t,".pdf"))
+  p <- plot_cell_counts(data_long_percentage, cell_t, "Cell %")
+  ggsave(full_filename, p, width = 4.5, height = 5)
+  plot(p)
+}
+```
+
+
+

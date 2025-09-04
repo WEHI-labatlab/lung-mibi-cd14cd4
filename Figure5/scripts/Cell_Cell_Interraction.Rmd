@@ -1,0 +1,114 @@
+---
+subtitle: "Data from Sorin's paper"
+title: "Cell interaction Analysis"
+author: "Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    keep-md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA, prompt = T, warning = F, message=F)
+options(width = 90, digits = 3)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(ggplot2)
+library(patchwork)
+#library(imcRtools)
+library(dplyr)
+library(viridis)
+library(scales)
+```
+
+
+# Cell-cell interaction test
+
+`testInteractions {imcRtools}`
+
+Cell-cell interactions are summarized and the resulting count is compared to a distribution of counts arising from random permutations.
+"How many neighbors of type B (to) does a cell of type A (from) have on average?"
+
+radius 30 for the graph (buildSpatialGraph, expansion, thr = 30)
+
+```{r eval=FALSE}
+# library(imcRtools)
+serParam <- SerialParam(progressbar = T, RNGseed = 42)
+
+spe <- buildSpatialGraph(spe, img_id = "sample_id",
+                         coords = c("Pos_X", "Pos_Y"),
+                         type = "expansion", name = "expansion30",
+                         threshold = 30, BPPARAM = serParam)
+
+spe <- aggregateNeighbors(spe,
+                          colPairName = "expansion30", 
+                          aggregate_by = "metadata", 
+                          count_by = "updCellType",
+                          name = "aggregatedNbors_h4_exp30")
+
+out <- testInteractions(spe,
+                        group_by = "sample_id",
+                        label = "updCellType",
+                        colPairName = "expansion30",
+                        #method = "histocat",
+                        BPPARAM = serParam)
+```
+
+
+# Plot results
+
+```{r}
+Sorin_LUAD_immune_subgroups <- readRDS("../../data/Sorin_LUAD_immune_subgroups.rds")
+
+out <- readRDS("../interim_data/out_testInteractions.rds")
+
+out$patient <- paste0("LUAD_", out$group_by)
+out$immune_subgr <- Sorin_LUAD_immune_subgroups$cluster[match(out$patient, Sorin_LUAD_immune_subgroups$patient)]
+```
+
+Code from [here](https://www.nature.com/articles/s41596-023-00881-0#Fig21)
+
+```{r}
+plot_interactions <- function(out, plot_title){
+  # Sum interaction values across all images
+  summed_sigvals <- out %>% as_tibble() %>%
+    filter(from_label != "Other") %>% 
+    filter(to_label != "Other") %>% 
+ group_by(from_label, to_label) %>%
+ summarize(sum_sigval = sum(sigval, na.rm = TRUE))
+  
+# Visualize summed interaction values in form of a heatmap
+ggplot(summed_sigvals) +
+ geom_tile(aes(from_label, to_label, fill = sum_sigval)) +
+ scale_fill_gradient2(low = muted("blue"),
+ mid = "white",
+ high = muted("red")) +
+ theme(axis.text.x = element_text(angle = 45, hjust = 1),
+       panel.background = element_blank())+
+  ggtitle(label = plot_title)
+}
+```
+
+
+```{r}
+out_LLM <- out[out$immune_subgr != "M",]
+out_L <- out[out$immune_subgr == "L",]
+
+plot_interactions(out, plot_title="Sorin, full tissue data")
+plot_interactions(out_LLM, "Sorin, full tissue data, L+LM immune subgroups")
+plot_interactions(out_L, "Sorin, full tissue data, L immune subgroup")
+```
+

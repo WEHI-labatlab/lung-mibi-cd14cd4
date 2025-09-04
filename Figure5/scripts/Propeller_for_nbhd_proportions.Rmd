@@ -1,0 +1,333 @@
+---
+subtitle: "Sorin: Proportion analysis of Neighbourhoods"
+title: "Neighbourhood of Th (CD14 negative) vs. ThCD14 positive"
+author: "Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+    keep-md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA, fig.height = 3, fig.width = 9,
+                      prompt = T, warning = F, message=F)
+options(width = 90, digits = 3)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+#library(knitr)
+library(tidyverse)
+library(patchwork)
+library(limma)
+library(speckle)
+library(ggVennDiagram)
+```
+
+# Preparation
+
+## Loading data
+
+```{r load}
+cell_info_sorin <- readRDS("../../data/Sorin_cell_info.rds")
+distToThCD14pos <- readRDS("../../data/Sorin_distToThCD14pos.rds") #fresh file
+distToThCD14neg <- readRDS("../../data/Sorin_distToTh.rds")
+updCellType <- readRDS("../../data/updatedCellTypes_Sorin.rds")
+sorin_immune_subgr <- readRDS("../../data/Sorin_LUAD_immune_subgroups.rds")
+```
+
+## Incorporating distance data
+
+Distance data was calculated using *minDistToCells()* function from `imcRtools` package.
+https://bodenmillergroup.github.io/imcRtools/articles/imcRtools.html#minimal-distances-to-cells-of-interest
+Basicaly, it's a Minimal distances to cells of interest (CD14+ or CD14- T cell)
+
+
+```{r append}
+cell_info_sorin$updCellType <- updCellType
+cell_info_sorin$distToThCD14pos <- distToThCD14pos
+cell_info_sorin$distToThCD14neg <- distToThCD14neg
+
+cell_info_sorin$immuneSubgroups <- sorin_immune_subgr$cluster[match(cell_info_sorin$Patient, sorin_immune_subgr$patient)]
+cell_info_sorin$immuneSubgroups <- as.character(cell_info_sorin$immuneSubgroups)
+
+status <- "in & out tumour"
+cell_info_sorin <- as.data.frame(cell_info_sorin#[cell_info_sorin$InTumour,]
+                                )
+# Filtering out patients with low number of ThCD14+ cells
+filtered_df <- cell_info_sorin %>%
+    group_by(Patient) %>%
+    summarise(ThCD14posCount = sum(updCellType == "ThCD14+")) %>%
+    filter(ThCD14posCount >= 5) %>%
+    left_join(cell_info_sorin, by = "Patient")
+length(unique(filtered_df$Patient)) # how many patients have at least 5 ThCD14+ cells
+
+cell_info_filt <- filtered_df[,c("Patient", "updCellType", "CellType_h2",
+                                    "distToThCD14neg",  "distToThCD14pos",
+                                 "immuneSubgroups")]
+```
+
+
+# The non-double counting approach
+
+Here I took all cells from one image that are within the radius 50 from any CD14+ or CD14- Th cell (separatelu for +/-). And I calculated percentages based on that, so no double counting of cells.
+
+
+## Data preparation
+
+Let's first filter out all cells that are not in the neighbourhood (of a particular radius) for both cell types of interest (Th and ThCD14+). After that, we are joining both filtered data sets.
+
+```{r data_prep}
+radius <- 50
+
+cell_info_filt$cell_id <- paste0(cell_info_filt$Patient, "_", rownames(cell_info_filt))
+columns_of_interest <- c("Patient", "updCellType", "immuneSubgroups", "CellType_h2", "cell_id")
+
+prep_data <- cell_info_filt %>% filter(., distToThCD14neg <= radius)
+prep_data_neg <- prep_data[,columns_of_interest]
+
+prep_data <- cell_info_filt %>% filter(., distToThCD14pos <= radius)
+prep_data_pos <- prep_data[,columns_of_interest]
+
+prep_data_neg$group <- "neg"
+prep_data_pos$group <- "pos"
+
+for_test <- rbind(prep_data_neg, prep_data_pos)
+```
+
+## Plot overlap
+
+Lat's look how much both neighbourhoods overlap (overall, and also split by immune subgroups)
+
+```{r ggVennDiagram}
+p1 <- ggVennDiagram(list(prep_data_neg$cell_id, prep_data_pos$cell_id),
+              category.names = c("Neg_nbhd", "Pos_nbhd"),)+
+  labs(title = "# of overlapping cells overall",
+       subtitle = paste0("Btw nbhds of radius ", radius, " ", status)) +
+  scale_x_continuous(expand = expansion(mult = .3))+theme(legend.position = "none")
+
+p2 <- ggVennDiagram(list(prep_data_neg$cell_id[prep_data_neg$CellType_h2 == "Lymphoid cell"],
+                   prep_data_pos$cell_id[prep_data_pos$CellType_h2 == "Lymphoid cell"]),
+              category.names = c("Neg_nbhd", "Pos_nbhd"),)+
+  labs(title = "Number of shared Lymphoid c",
+       subtitle = paste0("Btw nbhds of radius ", radius, " ", status)) +
+  scale_x_continuous(expand = expansion(mult = .3))+
+  theme(legend.position = "none")
+
+p3 <- ggVennDiagram(list(prep_data_neg$cell_id[prep_data_neg$CellType_h2 == "Myeloid cell"],
+                   prep_data_pos$cell_id[prep_data_pos$CellType_h2 == "Myeloid cell"]),
+              category.names = c("Neg_nbhd", "Pos_nbhd"),)+
+  labs(title = "Number of shared Myeloid c",
+       subtitle = paste0("Btw nbhds of radius ", radius, " ", status)) +
+  scale_x_continuous(expand = expansion(mult = .3))+theme(legend.position = "none")
+
+p1 + p2 + p3
+```
+
+We can see that overlap is significant, but not overwhelmingly. 
+
+# Propeller
+
+Next we will test difference in proportions of cell types in these neighbourhoods using propeller from [`speckle` package](https://bioconductor.org/packages/devel/bioc/vignettes/speckle/inst/doc/speckle.html).
+
+## Function to test
+
+Plot results from `propeller`
+
+```{r}
+plot_test_results <- function(res, plot_title, radius){
+    par(mfrow = c(1,3))
+  barplot(res$P.Value, names = rownames(res),
+          main = paste0("P.Val, ", plot_title),
+          sub = paste0("r ", radius),
+          las=2)
+  abline(h = 0.05, col = "red")
+  
+  barplot(res$FDR, names = rownames(res),
+          main = paste0("FDR, ", plot_title),
+          sub = paste0("r ", radius),
+          las=2)
+  abline(h = 0.05, col = "red")
+  
+  signif_res <- res[res$FDR < 0.05,]
+  #par(mfrow = c(1,1))
+  barplot(signif_res$Tstatistic, names = rownames(signif_res),
+          main = paste0("Signif, Tstat,
+                        neg-pos, ",plot_title),
+          sub = paste0("r ", radius),
+          las=2)
+}
+
+plot_col_test_res <- function(res, plot_title, col_vect){
+  signif_res <- res[res$FDR < 0.05,]
+  signif_res <- signif_res[-which(rownames(signif_res) %in% c("Th", "ThCD14+")),]
+  small_col_vect <- col_vect[rownames(signif_res)]
+  par(mar = c(6,4,4,2))
+  barplot(signif_res$Tstatistic, names = rownames(signif_res),
+          main = paste0("Signif,
+                        Tstat, neg-pos, ",plot_title),
+          col = col_vect[rownames(signif_res)],
+          las=2)
+}
+```
+
+This function uses `getTransformedProps` function to convert cell numbers in proportions and performs *logit* transformation. Design matrix includes *group* (neg or pos) factor and factor for *immune subgroups* (L, LM, M), as we know of the different % of lymphoid and myeloid cells in these groups of patients and we are not interested in the variability of those.
+
+Then `propeller.ttest` function called to perform t-tests between two groups (neg - pos).
+
+```{r fun_p}
+test_with_propeller <- function(for_test_LM, cluster, plot_title){
+  tr_prop <- getTransformedProps(sample = paste0(for_test_LM$Patient, "_",
+                                                 for_test_LM$group, "_",
+                                                 for_test_LM$immuneSubgroups),
+                   clusters = for_test_LM[[cluster]],
+                   transform = "logit")
+  split_name <- strsplit2(colnames(tr_prop$Counts), "_")
+  group <- split_name[,3]
+  patient <- split_name[,2]
+  immuneSubgr <- split_name[,4]
+  design <- model.matrix(~ 0 + group + immuneSubgr)
+  mycontr <- makeContrasts(groupneg-grouppos, levels=design)
+  res <- propeller.ttest(prop.list=tr_prop, design=design, 
+                         contrasts = mycontr,
+                         robust=TRUE, trend=FALSE, sort=TRUE)
+  
+  plot_test_results(res, plot_title, radius)
+  return(res)
+}
+```
+
+Function for L immune subgroup. The difference with the previous function is that instead of immuneSubgroup factor I included *patient* as a factor to get the information on the pairings of data rows.
+
+```{r}
+test_L_imm_subgr_with_propeller <- function(for_test_LM, cluster, plot_title){
+    tr_prop <- getTransformedProps(sample = paste0(for_test_LM$Patient, "_",
+                                                 for_test_LM$group),
+                   clusters = for_test_LM[[cluster]],
+                   transform = "logit")
+  split_name <- strsplit2(colnames(tr_prop$Counts), "_")
+  group <- split_name[,3]
+  patient <- split_name[,2]
+  design <- model.matrix(~ 0 + group + patient)
+  mycontr <- makeContrasts(groupneg-grouppos, levels=design)
+  res <- propeller.ttest(prop.list=tr_prop, design=design, 
+                         contrasts = mycontr,
+                         robust=TRUE, trend=FALSE, sort=TRUE)
+  
+  plot_test_results(res, plot_title, radius)
+  return(res)
+}
+```
+
+## Function to plot proportions
+
+```{r}
+CellType_h2_colours <- c("Cancer" = "#525252",
+   "Endothelial cell" = "#990000",
+   "Lymphoid cell" = "#fb6a4a",
+   "Myeloid cell" = "#43a2ca",
+   "Other" = "#bdbdbd")
+cd14pos_L_and_M_colors <- c(
+  "Tc" = "#e7298a",
+  "Th" = "#d57cd4",
+  "TcCD14+" = "#f595d2",
+  "ThCD14+" = "#f4cff3",
+  "Treg" = "#fd693a",
+  "T other" = "#ce1256",
+  "B cell" = "red",
+  "NK cell" = "#8c6bb1",
+  "NK_CD14+" = "#88419d",
+  "Alt MAC" = "#5886a5",
+  "Cl MAC" = "#00cee6",
+  "Cl Mo" = "#00cbc9",
+  "Int Mo" = "#02a19e",
+  "Non-Cl Mo" = "#017976",
+  "Mast cell" = "greenyellow",
+  "Neutrophils" = "seagreen1",
+  "DCs cell" = "royalblue1"
+)
+
+plot_prop <- function(tets_results, sub_title){
+  number_of_cell_types <- as.character(nrow(tets_results))
+  plot_colours <- switch (number_of_cell_types,
+                          "17" = cd14pos_L_and_M_colors,
+                          "9" = cd14pos_L_and_M_colors[1:9],
+                          "8" = cd14pos_L_and_M_colors[10:17],
+                         "5" = CellType_h2_colours)
+  test <- tets_results[,1:2]
+  colnames(test) <- gsub("PropMean.group", "", colnames(test))
+  test$cellTypes <- rownames(test)
+  test2 <- pivot_longer(test, cols = !cellTypes,
+                        names_to = "cond",
+                        values_to = "prop")
+  test2$cellTypes <- factor(test2$cellTypes, levels = names(plot_colours))
+  ggplot(test2, aes(x = cond,y = prop, fill = cellTypes)) +
+    geom_bar(position="fill", stat="identity")+
+   scale_fill_manual(values=plot_colours)+
+                labs(title = paste0("Cell types within radius ", radius),
+                 subtitle = sub_title,
+                 y = "Proportion mean from Propeller",
+                 x = "Neighbourhood of Th...")+
+        theme_bw()
+}
+```
+
+## Broad cell types
+
+```{r}
+ttl <- "All P, all cells"
+res <- test_with_propeller(for_test, "CellType_h2", ttl)
+```
+
+```{r fig.width=3, fig.height=4}
+plot_prop(res, paste(ttl, status))
+```
+
+## Lymphoid and Myeloid together
+
+### All patients
+
+```{r}
+for_test_LM <- for_test[for_test$CellType_h2 %in% c("Lymphoid cell", "Myeloid cell"),]
+ttl <- "All P, M&L"
+res <- test_with_propeller(for_test_LM, "updCellType",ttl)
+```
+
+```{r fig.width=3, fig.height=5}
+plot_prop(res, paste(ttl, status))
+```
+
+### L immune subgroup
+
+```{r eval=T}
+for_test_LM <- for_test_LM[for_test_LM$immuneSubgroups == "L",]
+ttl <- "L subgr, M&L"
+res <- test_L_imm_subgr_with_propeller(for_test_LM, "updCellType",ttl)
+```
+
+```{r fig.width=3, fig.height=5}
+plot_prop(res, paste(ttl, status))
+```
+
+```{r fig.width=5, fig.height=5}
+png("../plots/Tstatistics_from_propeller_nbhd_proportions_test.png")
+plot_col_test_res(res, paste(ttl, status), cd14pos_L_and_M_colors)
+dev.off()
+```
+
+# Session info 
+
+```{r}
+sessionInfo()
+```
+

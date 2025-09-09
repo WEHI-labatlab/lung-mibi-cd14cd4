@@ -1,0 +1,110 @@
+---
+subtitle: "Figure 2"
+title: "Correlation for markers in Epithelial cells"
+author: "Claire, Marceaux, Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(dplyr)
+library(tidyr)
+```
+
+
+# Read the data
+
+```{r}
+proportions_df <- readRDS("../interim_data/proportions_df.rds")
+```
+
+
+# Spearman correlation for markers in Epithelial cells
+
+Spearman correlation works better here because it tests for not only linear correlation, but any monotonic correlation (which doesn't have to be linear)
+
+```{r}
+# create a df to store the results
+res <- data.frame(LUAD = rep(0,6), LUSC = rep(0,6))
+# Looping by cancer type
+for (cancer_type in unique(proportions_df$`Cancer Type`)) {
+  proportions_df_spec <- proportions_df %>%
+    filter(`Cancer Type`== cancer_type)
+  # taking all possible combinations of two cell types
+  all_cell_types <- unique(proportions_df_spec$cell_type)
+  combinations <- combn(all_cell_types, 2)
+  # transforming the data to a wider format
+  proportions_df_spec <- proportions_df_spec %>% 
+    select(., Patient, cell_type, value)
+  wide_df <- spread(proportions_df_spec, key = Patient, value = value)
+  # Looping by pairwise comparisons
+  for (j in 1:ncol(combinations)) {
+    # selecting a column from matrix where each column represents a combination
+    comb <- combinations[,j]
+    # extracting rows of two specific cell type
+    sub_tbl <- wide_df[wide_df$cell_type %in% comb, -1]
+
+    # calculate the correlation
+    crlt <- cor(t(sub_tbl)[,1], t(sub_tbl)[,2], method = "spearman", use = "complete.obs")
+    
+    #cat(paste0("Spearman correlation between percentages of ", 
+    #             '\n',comb[1], " and ", comb[2], 
+    #             '\n',"in ", cancer_type, " is ", round(crlt, 2), '\n', '\n'))
+    
+    res[[cancer_type]][j] <- round(crlt, 2)
+    short_name <- gsub("Epithelial cells: ", "", comb)
+    rownames(res)[j] <- paste(short_name[1], short_name[2], sep = " vs ")
+  }
+}
+
+res
+
+```
+
+Overall is a weak correlation. The strongest is in LUAD between MHCI and MHCII
+
+# PD-1 score
+
+ToDo: need file from Claire
+
+```{r eval=FALSE}
+PDL1_counts <- read.csv(file="data/NSCLCcohort/processed/PDL1_counts_compartment_tumour_df.csv",header = TRUE)
+PDL1_counts_LUAD <- PDL1_counts %>%
+    filter(Cancer.Type=="LUAD", Patient!="12PM1068", Patient!="15MH0013")
+
+proportions_df_LUAD_MHCI <- proportions_df_LUAD_MHCI %>%
+    filter(Patient!="12PM1068", Patient!="15MH0013")
+
+proportions_df_LUAD_MHCII <- proportions_df_LUAD_MHCII %>%
+    filter(Patient!="12PM1068", Patient!="15MH0013")
+
+cor(proportions_df_LUAD_MHCI$scaled.values,PDL1_counts_LUAD$PDL1classification, method = "pearson")
+cor(proportions_df_LUAD_MHCII$scaled.values,PDL1_counts_LUAD$PDL1classification, method = "pearson")
+
+cor(proportions_df_LUAD_MHCI$scaled.values,PDL1_counts_LUAD$PDL1classification, method =  "spearman")
+cor(proportions_df_LUAD_MHCII$scaled.values,PDL1_counts_LUAD$PDL1classification, method = "spearman")
+
+
+PDL1_counts_LUSC <- PDL1_counts %>%
+    filter(Cancer.Type=="LUSC")
+
+cor(proportions_df_LUSC_MHCI$scaled.values,PDL1_counts_LUSC$PDL1classification, method = "pearson")
+cor(proportions_df_LUSC_MHCII$scaled.values,PDL1_counts_LUSC$PDL1classification, method = "pearson")
+
+cor(proportions_df_LUSC_MHCI$scaled.values,PDL1_counts_LUSC$PDL1classification, method =  "spearman")
+cor(proportions_df_LUSC_MHCII$scaled.values,PDL1_counts_LUSC$PDL1classification, method = "spearman")
+```

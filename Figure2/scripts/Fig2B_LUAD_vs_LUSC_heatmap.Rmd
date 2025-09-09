@@ -1,0 +1,289 @@
+---
+subtitle: "CM cohort"
+title: "Figure 2"
+author: "Claire, Marceaux, Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(ggplot2)
+library(patchwork)
+library(pheatmap)
+library(RColorBrewer)
+library(dplyr)
+library(tidyr)
+```
+
+# Preparation
+
+## Read the data
+
+```{r}
+patient_counts <- readRDS(file="../../data/CM_patient_counts_compartment_2_all_FM_TRM_df.rds")
+CM_LUAD_immune_subgr <- readRDS("../../data/CM_LUAD_immune_subgroups.rds")
+CM_LUSC_immune_subgr <- readRDS("../../data/CM_LUSC_k2_immune_subgroups.rds")
+```
+
+## Source the functions
+
+```{r source_functions}
+source('../../src/calculate_cell_type_percentages.R')
+source('../../src/plot_heatmap_immune_subgroups.R')
+#source the colors
+immune_subgroup_colors <- readRDS("../../data/immune_subgroup_colors.rds")
+```
+
+## Set the output folder
+
+```{r}
+output_folder <- "../plots/"
+if (!dir.exists(output_folder)){
+    dir.create(output_folder, recursive = T)
+}
+```
+
+# Second Compartment: Tumor cells
+
+## Update Immune subgroups
+
+First, let's get the info about Immune subgroups from the Figure 3
+
+```{r}
+ImmuneSubgroups <- rbind(CM_LUAD_immune_subgr, CM_LUSC_immune_subgr)
+
+patient_counts$ImmuneSubgroups <- ImmuneSubgroups$cluster[match(patient_counts$Patient,
+                                     ImmuneSubgroups$patient)]
+table(patient_counts$`Cancer Type`, patient_counts$ImmuneSubgroups)
+```
+
+
+## Calculate cell percentage for Epithelial cells
+
+```{r}
+group_cols <- c("Patient", "Cancer Type", "Compartment (2)")
+
+cell_types <- c(
+    "Epithelial cells: MHC I (HLA Class1)+",
+    "Epithelial cells: MHC II (HLA-DR)+",
+    "Epithelial cells: IFN-y+",
+    "Epithelial cells: Ki67+"
+)
+
+parent_type <- "Epithelial cells"
+```
+
+```{r}
+# calculate the proportions
+proportions_df <- calculate_cell_type_percentages(patient_counts, group_cols, cell_types, parent_type)
+
+# we need to filter out the proportions with less than 5 parent cell type
+proportions_df <- proportions_df %>% 
+    filter(parent_type_count >= 5)
+
+# get only the tumour 
+proportions_df <- proportions_df %>%
+    filter(`Compartment (2)`=="Tumour")
+```
+
+Filter
+
+```{r}
+# center the proportions
+# proportions_df <- proportions_df %>% 
+#     group_by_at(c("Cancer Type", "Compartment (2)", "percentage")) %>%
+#     mutate(scaled.values = scale(value)[,1])
+
+mhc_i <-proportions_df %>% 
+    filter(percentage=="(Epithelial cells: MHC I (HLA Class1)+/Epithelial cells)%") %>%
+    subset(select=c(Patient, percentage, value))
+
+proportions_df$Patient <- factor(proportions_df$Patient, levels = mhc_i$Patient[order(mhc_i$value, decreasing = T)])
+proportions_df$percentage <- factor(proportions_df$percentage, levels = rev(unique(proportions_df$percentage)))
+
+saveRDS(proportions_df, file = "../interim_data/proportions_df.rds")
+```
+
+## Markers plot
+
+```{r}
+marker_raster <- ggplot(proportions_df, aes(x=Patient, y=percentage), fill = value) + 
+    geom_raster() +
+    geom_tile(aes(fill = value), colour = "black", linewidth = 0.2) +
+    scale_fill_distiller(palette = "BuPu")+
+    theme(
+        panel.background = element_blank(),
+        strip.text.y = element_blank(),
+        legend.position="top",
+        plot.margin = margin(t = 0,  # Top margin
+                             r = 0.8,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0),
+        panel.spacing = unit(0.1, "cm"),
+        strip.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle=90)
+        # axis.text.x = element_blank()
+    ) + 
+    facet_grid(cols = vars(`Cancer Type`), scales="free_x", space = "free") 
+```
+
+## Change OS and RFS groups
+
+```{r}
+#change OS and RFS groups,
+
+# Conditionally rename the 'RFS groups' column (cut off of 3years)
+patient_counts <- patient_counts %>%
+    mutate(`RFS group` = ifelse(`RFS (days)` < 1095, 'Short', `RFS group`))
+patient_counts <- patient_counts %>%
+    mutate(`OS group` = ifelse(`OS (days)` < 1095, 'Short', `OS group`))
+
+# for the meta data below
+meta_data_cols <- c("RFS group", "OS group", "ImmuneSubgroups")
+
+meta_data_df <- patient_counts %>%
+    subset(select=c(group_cols, meta_data_cols)) %>%
+    pivot_longer(cols = all_of(meta_data_cols), 
+                 names_to = "meta", 
+                 values_to = "value")
+```
+
+
+
+```{r}
+meta_data_df$value <- paste(meta_data_df$meta, meta_data_df$value)
+
+
+meta_data_df$value <- factor(meta_data_df$value, levels = c("RFS group Long", 
+                                                            "RFS group Short", 
+                                                            "OS group Long",
+                                                            "OS group Short",
+                                                            "ImmuneSubgroups L", 
+                                                            "ImmuneSubgroups LM", 
+                                                            "ImmuneSubgroups M"))
+
+# filter duplicates
+meta_data_df <- meta_data_df[!duplicated(meta_data_df), ]
+
+# keep only patients from above
+meta_data_df <- meta_data_df %>%
+    filter(Patient %in% unique(proportions_df$Patient))
+
+meta_data_df$Patient <- factor(meta_data_df$Patient, levels = mhc_i$Patient[order(mhc_i$value, decreasing = T)])
+
+meta_data_df <- meta_data_df %>%
+    filter(`Compartment (2)` == "Tumour")
+```
+
+## Meta data plot
+
+```{r}
+meta_data_raster <- ggplot(meta_data_df, aes(x=Patient, y=meta), fill = value) + 
+    geom_raster() +
+    geom_tile(aes(fill = value), linewidth = 0.2) +
+    scale_fill_manual(values = c("plum1", "plum4", "skyblue", "skyblue4", "tomato1", "goldenrod1", "steelblue3"))+
+    theme(
+        panel.background = element_blank(),
+        strip.text.y = element_blank(),
+        legend.position="right",
+        plot.margin = margin(t = 0,  # Top margin
+                             r = -0.8,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0),
+        panel.spacing = unit(0.1, "cm"),
+        strip.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_text(angle = 90)
+        # axis.text.x = element_blank()
+    ) +
+    facet_grid(cols = vars(`Cancer Type`), scales="free_x", space = "free") 
+```
+
+## Combined plot
+
+```{r fig.height= 8, fig.width= 15}
+# the file name of the heatmap 
+full_filename <- file.path(output_folder, "LUSC-LUAD-tumour_fm_heatmap_mhc_i_sorted.png")
+
+aligned <- cowplot::align_plots(marker_raster, meta_data_raster, align="v", axis="tblr")
+p <- gridExtra::grid.arrange(aligned[[1]], aligned[[2]], ncol=1, nrow=2, heights=c(1, 1))
+ggsave(full_filename, p)
+```
+
+# Third Compartment
+
+```{r}
+## add % immune cells
+#in 3 compartment
+run_name <- "ImmuneCellProportion-TumourCore"
+
+patient_counts3 <- readRDS(file="../../data/CM_patient_counts_compartment_3_all_FM_TRM_macro_CD14_TRM_df.rds")
+patient_counts3 <- patient_counts3 %>% rowwise() %>%
+    mutate(TotalCell = sum(`Epithelial cells`,`Immune cells`,Other , `Stromal cells`))
+
+group_cols3 <- c("Patient", "Cancer Type","Compartment (3)")
+
+cell_types3 <- c(
+    "Immune cells")
+
+parent_type3 <- c("TotalCell")
+
+# calculate the proportions
+proportions_df3 <- calculate_cell_type_percentages(patient_counts3, group_cols3, cell_types3, parent_type3)
+
+# we need to filter out the proportions with less than 5 of immune cells
+proportions_df3 <- proportions_df3 %>% 
+    filter(parent_type_count >= 5)
+```
+
+
+```{r }
+shrinked_df3 <- proportions_df3 %>% select(., Patient, `Cancer Type`, `Compartment (3)`, value, percentage)
+
+wide_df <- spread(shrinked_df3, key = percentage, value = value)
+wide_df$Patient <- factor(wide_df$Patient, levels = levels(proportions_df$Patient))
+wide_df$`Compartment (3)` <- factor(wide_df$`Compartment (3)`, levels = rev(c("Tumour Core", "Boundary", "Stroma Core")))
+```
+
+Plot
+
+```{r fig.height= 4, fig.width= 10}
+ggplot(wide_df, aes(x=Patient, y=`Compartment (3)`), fill = `(Immune cells/TotalCell)%`) + 
+     geom_raster() +
+     geom_tile(aes(fill = `(Immune cells/TotalCell)%`), colour = "black", linewidth = 0.2) +
+     scale_fill_distiller(palette = "YlGnBu", values = c(0, 0.3, 0.5, 1), na.value = "grey50")+
+    facet_grid(cols = vars(`Cancer Type`), scales="free_x", space = "free") +
+  theme(
+        panel.background = element_blank(),
+        strip.text.y = element_blank(),
+        legend.position="top",
+        plot.margin = margin(t = 0,  # Top margin
+                             r = 0,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0),
+        panel.spacing = unit(0.1, "cm"),
+        strip.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle=90)
+        # axis.text.x = element_blank()
+    )
+
+ggsave(file.path(output_folder, "ImmuneCellProportions_heatmap.png"))
+```

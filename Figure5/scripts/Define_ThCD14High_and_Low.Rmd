@@ -1,0 +1,228 @@
+---
+subtitle: "Figure 2"
+title: "Define ThCD14 High vs Low"
+author: "Claire Marceaux, Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(qs)
+library(SpatialExperiment)
+library(ggplot2)
+```
+
+
+# Sorin
+
+ThCD14 high vs low
+
+## Load the data
+
+```{r}
+Sorin_cohort <- readRDS(file = "../../data/Sorin_cell_info.rds")
+Sorin_cohort <- as.data.frame(Sorin_cohort)
+Sorin_cohort$CellType <- as.character(Sorin_cohort$CellType)
+```
+
+
+## Calculate ThCD14 high status
+
+Count the number of cells per Patient, CellType, and StatusCD14
+
+```{r}
+CD14_cell_counts <- Sorin_cohort %>%
+  group_by(Patient, CellType, CD14status, InTumour) %>% 
+  summarise(CellCount = n(), .groups = "drop")
+```
+
+Calculate the total count of each CellName and Status for each Patient
+```{r}
+cell_counts <- CD14_cell_counts %>%
+  group_by(Patient, CellType,InTumour) %>%
+  summarize(TotalCellCount = sum(CellCount), .groups = 'drop')
+```
+
+Merge the total counts back with the original counts
+```{r}
+Sorin_cell_percentages <- CD14_cell_counts %>%
+  left_join(cell_counts, by = c("Patient", "CellType","InTumour")) %>%
+  mutate(Percentage = (CellCount * 100) / TotalCellCount)
+```
+
+## Keep only in Tumour
+
+And filter samples with at least 5 cells
+
+```{r}
+Percentage_Sorin_cohort_Tumour <- Sorin_cell_percentages %>%
+  filter(InTumour=="TRUE")
+
+Percentage_Sorin_cohort_Tumour <- Percentage_Sorin_cohort_Tumour %>%
+  filter(TotalCellCount >= 5)
+```
+
+Keep only Th and Tc
+```{r}
+Percentage_Sorin_cohort_Tumour_Th <- Percentage_Sorin_cohort_Tumour %>%
+  filter(CellType %in% "Th")
+Percentage_Sorin_cohort_Tumour_Tc <- Percentage_Sorin_cohort_Tumour %>%
+  filter(CellType %in% "Tc")
+```
+
+Keep only CD14+
+```{r}
+Percentage_Sorin_cohort_Tumour_Th <- Percentage_Sorin_cohort_Tumour_Th %>%
+  filter(CD14status == "pos")
+Percentage_Sorin_cohort_Tumour_Tc <- Percentage_Sorin_cohort_Tumour_Tc %>%
+  filter(CD14status == "pos")
+```
+
+## Calculate threshold 
+
+Which is the mean for high CD14 vs low
+
+```{r}
+threshold_Sorin_CD4CD14_Tumour <- mean(Percentage_Sorin_cohort_Tumour_Th %>% pull(Percentage))
+Percentage_Sorin_cohort_Tumour_Th$ThCD14_high <- Percentage_Sorin_cohort_Tumour_Th$Percentage > threshold_Sorin_CD4CD14_Tumour
+```
+
+```{r}
+threshold_Sorin_CD8CD14_Tumour <- mean(Percentage_Sorin_cohort_Tumour_Tc %>% pull(Percentage))
+Percentage_Sorin_cohort_Tumour_Tc$TcCD14_high <- Percentage_Sorin_cohort_Tumour_Tc$Percentage > threshold_Sorin_CD8CD14_Tumour
+```
+
+## Plot
+
+```{r}
+hist(Percentage_Sorin_cohort_Tumour_Tc$Percentage, main = "Tc CD14+ %")
+abline(v = mean(Percentage_Sorin_cohort_Tumour_Tc$Percentage), col = "blue")
+
+
+hist(Percentage_Sorin_cohort_Tumour_Th$Percentage, main = "Th CD14+ %")
+abline(v = mean(Percentage_Sorin_cohort_Tumour_Th$Percentage), col = "red")
+```
+
+
+## Save
+
+```{r}
+saveRDS(Percentage_Sorin_cohort_Tumour_Th, file = "../interim_data/Percentage_Sorin_cohort_Tumour_MLLM_CD4CD14.rds")
+```
+
+# Enfield
+
+## Load the data
+
+Filtering LUAD only, get the CD14 status
+
+```{r}
+Enfield_cohort <- readRDS("../../data/Enfield_tumor_cells_info.rds")
+patient_survival <- readRDS("../../data/Enfield_patient_survival.rds")
+luad_patients <- patient_survival$cruk_id[startsWith(patient_survival$histology_multi_full_genomically.confirmed, "LUAD")]
+Enfield_cohort <- Enfield_cohort[Enfield_cohort$Patient %in% luad_patients,]
+
+CD14Status <- readRDS("../../data/Enfield_statusCD14_LUAD.rds")
+Enfield_cohort$CD14Status <- CD14Status$statusCD14[match(Enfield_cohort$cellID, CD14Status$cellID)]
+dim(Enfield_cohort)
+```
+
+
+## Prepare data
+
+Keep only in Tumour
+```{r}
+Enfield_cell_Tumour <- Enfield_cohort %>%
+  filter(region=="Tumour")
+dim(Enfield_cell_Tumour)
+```
+
+Create new column with cell type and cd14 info
+```{r}
+Enfield_cell_Tumour <- Enfield_cell_Tumour %>%
+  mutate(majorType_CD14 = paste(majorType, CD14Status, sep = "_"))
+```
+
+Remove columns
+```{r}
+Enfield_cell_Tumour <- Enfield_cell_Tumour %>%
+  select(-cellType, -CD14Status)
+```
+
+```{r}
+# Step 2: Group by Patient and majorType_CD14, then summarize the counts
+cell_counts_cd14 <- Enfield_cell_Tumour %>%
+  group_by(Patient, majorType_CD14) %>%
+  summarise(count_majorType_CD14 = n(), .groups = 'drop')
+
+# Step 3: Group by Patient and majorType, then summarize the counts
+cell_counts_majorType <- Enfield_cell_Tumour %>%
+  group_by(Patient, majorType) %>%
+  summarise(count_majorType = n(), .groups = 'drop')
+
+# Step 4: Pivot the data so each majorType_CD14 becomes a column
+pivoted_cd14 <- cell_counts_cd14 %>%
+  pivot_wider(names_from = majorType_CD14, values_from = count_majorType_CD14, values_fill = list(count_majorType_CD14 = 0))
+
+# Step 5: Pivot the data so each majorType becomes a column
+pivoted_majorType <- cell_counts_majorType %>%
+  pivot_wider(names_from = majorType, values_from = count_majorType, values_fill = list(count_majorType = 0))
+
+# Step 6: Join the two pivoted data frames by Patient
+final_result <- left_join(pivoted_cd14, pivoted_majorType, by = "Patient")
+
+# Remove columns that end with "CD14-"
+final_result_clean <- final_result %>%
+  select(-ends_with("_neg"))
+```
+
+## Calculate percentage 
+
+And filter when parent less than 5
+
+```{r}
+Percentage_Enfield_cohort_Tumour <- final_result_clean %>%
+  mutate(
+    PercentageCD4CD14 = ifelse(`CD4 T cells` < 5, NaN, (`CD4 T cells_pos` / `CD4 T cells`) * 100),
+    PercentageCD8CD14 = ifelse(`CD8 T cells` < 5, NaN, (`CD8 T cells_pos` / `CD8 T cells`) * 100)
+  )
+```
+
+prepare for analysis of CD4CD14+ (keep only CD4CD14 and remove when NaN)
+
+```{r}
+Percentage_Enfield_cohort_Tumour_CD4CD14 <- Percentage_Enfield_cohort_Tumour %>%
+  filter(!is.na(PercentageCD4CD14))
+Percentage_Enfield_cohort_Tumour_CD4CD14 <- Percentage_Enfield_cohort_Tumour_CD4CD14[, c("Patient", "PercentageCD4CD14")]
+Percentage_Enfield_cohort_Tumour_CD8CD14 <- Percentage_Enfield_cohort_Tumour %>%
+  filter(!is.na(PercentageCD8CD14))
+Percentage_Enfield_cohort_Tumour_CD8CD14 <- Percentage_Enfield_cohort_Tumour_CD8CD14[, c("Patient", "PercentageCD8CD14")]
+```
+
+```{r}
+hist(Percentage_Enfield_cohort_Tumour_CD4CD14$PercentageCD4CD14, main = "Enfield, Th CD14+ %, red is the mean")
+abline(v = mean(Percentage_Enfield_cohort_Tumour_CD4CD14$PercentageCD4CD14), col = "red")
+```
+
+
+## Save
+
+```{r}
+saveRDS(Percentage_Enfield_cohort_Tumour_CD4CD14, file = "../interim_data/Percentage_Enfield_cohort_Tumour_ThCD14.rds")
+```

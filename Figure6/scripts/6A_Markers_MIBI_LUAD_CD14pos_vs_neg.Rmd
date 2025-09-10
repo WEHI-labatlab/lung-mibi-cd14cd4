@@ -1,0 +1,154 @@
+---
+title: "Markers_MIBI_LUAD_CD14pos_vs_neg"
+author: "Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+```{r}
+#file from Kenta
+source("../../src/calculate_cell_type_percentages.R")
+```
+
+```{r}
+output_folder <- "../plots/"
+if (!dir.exists(output_folder)){
+    dir.create(output_folder, recursive = T)
+}
+```
+
+# Load the data (CM only)
+
+```{r}
+patient_counts <- readRDS(file="../../data/CM_patient_counts_compartment_3_all_FM_TRM_macro_CD14_TRM_df.rds")
+
+CM_processed_cell_meta_data_df <- readRDS("../../data/CM_processed_cell_meta_data_df.rds")
+markers <- colnames(CM_processed_cell_meta_data_df[,6:25])
+markers <- markers[-which(markers == "CD14")]
+```
+
+## Filter data
+
+```{r}
+luad_patient_counts <- patient_counts[patient_counts$`Cancer Type` == "LUAD",]
+
+is_t_cd14 <- colnames(luad_patient_counts)[startsWith(colnames(luad_patient_counts),"CD4 T cells: CD14")] 
+t_cell_info <- luad_patient_counts[,is_t_cd14]
+```
+
+## Calculate percentage
+
+For each marker (positive), calcultae percentage to CD14+ and CD14- CD4+ T cells
+
+```{r}
+get_percentage <- function(t_cell_info, markers, column, luad_patient_counts){
+  colnames_of_interest <- c(paste0(column, markers, "+"))
+  t_cell_info_filt <- t_cell_info[,colnames(t_cell_info) %in% colnames_of_interest]
+  t_cell_info_filt$Patient <- luad_patient_counts$Patient
+  colnames(t_cell_info_filt) <- gsub("CD4 T cells\\: ", "", colnames(t_cell_info_filt))
+  t_cell_info_filt[[column]] <- luad_patient_counts[[column]]
+  
+  column_sym <- sym(column)
+  
+  summ_df<- t_cell_info_filt %>%
+    group_by(Patient) %>%
+    summarise(across(everything(), sum, .names = "{.col}")) %>%
+      mutate(across(
+        -c(Patient, !!column_sym),
+        ~ .x / .data[[column]] * 100,
+        .names = "{.col}_percent"
+      ))
+ 
+  res <- summ_df[,endsWith(colnames(summ_df), "_percent")]
+  colnames(res) <- gsub("_percent", "", colnames(res))
+  
+  return(res)
+}
+```
+
+```{r}
+cd14pos <- get_percentage(t_cell_info, markers, "CD4 T cells: CD14+", luad_patient_counts)
+colnames(cd14pos) <- gsub("CD14\\+", "", colnames(cd14pos))
+colnames(cd14pos) <- paste0(colnames(cd14pos), "pos")
+cd14neg <- get_percentage(t_cell_info, markers, "CD4 T cells: CD14-", luad_patient_counts)
+colnames(cd14neg) <- gsub("CD14\\-", "", colnames(cd14neg))
+colnames(cd14neg) <- paste0(colnames(cd14neg), "neg")
+
+summ_df <- cbind(cd14pos, cd14neg)
+summ_df <- summ_df[,order(colnames(summ_df))]
+
+par(mar = c(10, 4,2,2))
+boxplot(summ_df, las=2, col = c("magenta", "darkmagenta"))
+# Marker_expression_in_MIBI_LUAD_CD14pos_vs_CD14neg.pdf
+```
+
+## Calculate p values
+
+Claire said that she used paired t test
+
+```{r}
+library(dplyr)
+library(purrr)
+
+# Perform paired t-test for all marker pairs ending in 'neg' and 'pos'
+run_paired_ttests <- function(df) {
+  # Extract base marker names (e.g., CD103+) from column names
+  markers <- gsub("(neg|pos)$", "", names(df)) %>%
+    unique()
+  
+  # Remove any that don’t have both neg and pos columns
+  valid_markers <- markers[map_lgl(markers, function(marker) {
+    all(paste0(marker, c("neg", "pos")) %in% names(df))
+  })]
+
+  # Run t-tests
+  results <- map_dfr(valid_markers, function(marker) {
+    col_neg <- df[[paste0(marker, "neg")]]
+    col_pos <- df[[paste0(marker, "pos")]]
+    test <- t.test(col_neg, col_pos, paired = TRUE)
+    
+    tibble(
+      marker = marker,
+      p_value = test$p.value,
+      statistic = test$statistic,
+      mean_neg = mean(col_neg),
+      mean_pos = mean(col_pos),
+      direction = ifelse(mean(col_pos) > mean(col_neg), "up in pos", "up in neg")
+    )
+  })
+  
+  return(results)
+}
+
+```
+
+
+```{r}
+res <- run_paired_ttests(summ_df)
+
+par(mar = c(9, 4,3,2))
+barplot(-log10(res$p_value), names.arg = res$marker, las=2, 
+        ylab = "-log10(p_value)", main = "Paired T test")
+abline(h = -log10(0.05), col="red")
+```
+

@@ -1,0 +1,402 @@
+---
+subtitle: "Figure 2"
+title: "Volcano plot for ThCD14 High vs Low with CN clusters"
+author: "Ilariya Tarasova, Kenta Yokote"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+```{r}
+#file from Kenta
+source("../../src/calculate_cell_type_percentages.R")
+```
+
+```{r}
+output_folder <- "../plots/"
+if (!dir.exists(output_folder)){
+    dir.create(output_folder, recursive = T)
+}
+```
+
+# Data prep
+
+## Read the data
+
+the patient counts and new immune subgroups
+
+```{r}
+cn_res <- readRDS(file="../interim_data/out_CN6_Sorin_immune_only_new_kmean.rds")
+Percentage_Sorin_cohort_Tumour_Th <- readRDS("../../Figure2/interim_data/Percentage_Sorin_cohort_Tumour_MLLM_CD4CD14.rds")
+Sorin_cell_info <- readRDS(file="../../data/Sorin_cell_info.rds")
+ImmuneSubgroups <- readRDS(file="../../data/Sorin_LUAD_immune_subgroups.rds")
+```
+
+
+## Add 
+
+```{r}
+#cn_res$InTumour <- Sorin_cell_info$InTumour[match(cn_res$cell.id, rownames(Sorin_cell_info))]
+
+cn_res$Patient <- paste0("LUAD_", cn_res$Image.x)
+cn_res_filt <- cn_res[cn_res$Patient %in% Percentage_Sorin_cohort_Tumour_Th$Patient,]
+```
+
+## Summarise
+
+```{r}
+cn_counts <- cn_res_filt %>% 
+  group_by(Patient, CN.clusters) %>% 
+  summarise(count = n(), .groups = "drop")
+
+  clustered_counts <- cn_counts %>%
+  filter(CN.clusters != -1) %>%
+  group_by(Patient) %>%
+  summarise(CN = sum(count), .groups = "drop")
+
+# Step 2: Join back to original df
+total_cn_counts <- cn_counts %>%
+  filter(CN.clusters != -1) %>%
+  left_join(clustered_counts, by = c("Patient"))
+
+total_cn_counts$CN.clusters <- paste0("CN.", total_cn_counts$CN.clusters)
+total_cn_counts_wide <- pivot_wider(total_cn_counts, names_from = "CN.clusters",
+                                    values_from = "count", values_fill = 0)
+
+total_cn_counts_wide$ThCD14_high <- Percentage_Sorin_cohort_Tumour_Th$ThCD14_high[match(total_cn_counts_wide$Patient, Percentage_Sorin_cohort_Tumour_Th$Patient)]
+total_cn_counts_wide$ThCD14_high <- ifelse(total_cn_counts_wide$ThCD14_high,
+                                           "high", "low")
+
+
+df_long <- total_cn_counts_wide %>%
+  pivot_longer(cols = starts_with("CN."), names_to = "CN_cluster", values_to = "count_in_cluster") %>%
+  mutate(percent = 100 * count_in_cluster / CN)
+
+boxplot(df_long$percent[df_long$ThCD14_high == "high" & df_long$CN_cluster == "CN.1"],
+        df_long$percent[df_long$ThCD14_high == "low" & df_long$CN_cluster == "CN.1"])
+
+#average percentage per cluster and ThCD14_high group
+summary_df <- df_long %>%
+  group_by(CN_cluster, ThCD14_high) %>%
+  summarise(mean_percent = mean(percent), .groups = "drop") %>%
+  pivot_wider(names_from = ThCD14_high, values_from = mean_percent) %>%
+  mutate(log2FC = log2(high / low),
+         percentage = CN_cluster) %>%
+  select(percentage, high, low, log2FC)
+
+p.values <- df_long %>%
+    group_by_at(c("CN_cluster")) %>%
+    group_modify(~{
+        return(data.frame(p.value=wilcox.test(percent ~ ThCD14_high, .x, exact=FALSE)$p.value))
+    })
+
+summary_df$p.value <- p.values$p.value
+```
+
+
+```{r}
+vars <- c("high", "low")
+summary_df2 <- df_long %>%
+    group_by_at(c("ThCD14_high", "CN_cluster")) %>%
+    summarise(mean = mean(percent)) %>%
+    pivot_wider(names_from = all_of(c("ThCD14_high")), values_from = "mean") %>%
+    mutate(log2FC = log2(.data[[vars[[1]]]]/.data[[vars[[2]]]]))
+
+p.values2 <- df_long %>%
+    group_by_at(c("CN_cluster")) %>%
+    group_modify(~{
+        return(data.frame(p.value=wilcox.test(percent ~ ThCD14_high, .x, exact=FALSE)$p.value))
+    })
+
+summary_df2$p.value <- p.values2$p.value
+```
+
+# Plots
+
+## Volcano plot
+
+```{r}
+colors <- c(
+  "CD8"  = "chocolate4",
+  "CD4"  = "goldenrod1",
+  "Neutro"  = "seagreen1",
+  "Macro"  = "turquoise1",
+  "MyeloT"  = "cyan4",
+  "B_T"  = "darkorange2",
+  "B"  = "red"
+)
+
+matching <- c(
+  "CN.1" = "CD4",
+  "CN.2" = "B",
+  "CN.3" = "MyeloT",
+  "CN.4" = "Neutro",
+  "CN.5" = "CD8",
+  "CN.6" = "Macro"
+)
+
+summary_df2$CN_cluster_named <- matching[summary_df2$CN_cluster]
+ggplot(summary_df2, aes(x=log2FC, y=-log10(p.value), colour = CN_cluster_named)) +
+    geom_point(size=4, ) + 
+    geom_vline(xintercept=0, linetype="dashed") + 
+    geom_hline(yintercept = -log10(0.05), linetype="dashed") +
+  labs(x = "log2FC(high/low)", y = "-log10(p.value)",
+       title = "Sorin, all data, spatial nbhd")+
+    scale_color_manual(values=colors)+
+    theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")
+    )
+ggsave(file.path(output_folder, paste0("volcano_plot_ThCD14HighvsLow_CN6clusters_changed_coloures.png")))
+#ggsave(file.path(output_folder, paste0("volcano_ThCD14HighvsLow_CN6_changed_col.pdf")))
+```
+
+## Pie chart
+
+```{r}
+data <- summary_df2[,c("CN_cluster", "high", "CN_cluster_named")]
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$high)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Make the plot
+high <- ggplot(data, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=CN_cluster_named)) +
+  geom_rect() +
+  geom_label( x=2, aes(y=labelPosition, label=CN_cluster_named), size=4) +
+  scale_fill_manual(values=colors)+
+  labs(title = "Sorin, nbhd: ThCD14 high")+
+  coord_polar(theta="y") +
+  xlim(c(-1, 4)) +
+  theme_void() +
+  theme(legend.position = "none")
+
+data <- summary_df2[,c("CN_cluster", "low", "CN_cluster_named")]
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$low)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Make the plot
+low <- ggplot(data, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=CN_cluster_named)) +
+  geom_rect() +
+  geom_label(x=2, aes(y=labelPosition, label=CN_cluster), size=4) +
+  scale_fill_manual(values=colors)+
+  labs(title = "Sorin, nbhd: ThCD14 low")+
+  coord_polar(theta="y") +
+  xlim(c(-1, 4)) +
+  theme_void() +
+  theme(legend.position = "none")
+
+library(patchwork)
+high + low
+
+ggsave(file.path(output_folder, paste0("piechart_ThCD14HighvsLow_CN6.pdf")))
+```
+
+# In/out Tumour
+
+```{r}
+cn_res_filt$InTumour <- Sorin_cell_info$InTumour[match(cn_res_filt$cell.id, rownames(Sorin_cell_info))]
+
+cn_counts <- cn_res_filt %>% 
+  group_by(Patient, CN.clusters, InTumour) %>% 
+  summarise(count = n(), .groups = "drop")
+
+  clustered_counts <- cn_counts %>%
+  filter(CN.clusters != -1) %>%
+  group_by(Patient, InTumour) %>%
+  summarise(CN = sum(count), .groups = "drop")
+
+# Step 2: Join back to original df
+total_cn_counts <- cn_counts %>%
+  filter(CN.clusters != -1) %>%
+  left_join(clustered_counts, by = c("Patient", "InTumour"))
+
+total_cn_counts$CN.clusters <- paste0("CN.", total_cn_counts$CN.clusters)
+total_cn_counts_wide <- pivot_wider(total_cn_counts, names_from = "CN.clusters",
+                                    values_from = "count", values_fill = 0)
+
+total_cn_counts_wide$ThCD14_high <- Percentage_Sorin_cohort_Tumour_Th$ThCD14_high[match(total_cn_counts_wide$Patient, Percentage_Sorin_cohort_Tumour_Th$Patient)]
+total_cn_counts_wide$ThCD14_high <- ifelse(total_cn_counts_wide$ThCD14_high,
+                                           "high", "low")
+
+
+df_long <- total_cn_counts_wide %>%
+  pivot_longer(cols = starts_with("CN."), names_to = "CN_cluster", values_to = "count_in_cluster") %>%
+  mutate(percent = 100 * count_in_cluster / CN)
+
+boxplot(df_long$percent[df_long$ThCD14_high == "high" & df_long$CN_cluster == "CN.1"],
+        df_long$percent[df_long$ThCD14_high == "low" & df_long$CN_cluster == "CN.1"])
+
+#average percentage per cluster and ThCD14_high group
+summary_df <- df_long %>%
+  group_by(CN_cluster, ThCD14_high, InTumour) %>%
+  summarise(mean_percent = mean(percent), .groups = "drop") %>%
+  pivot_wider(names_from = ThCD14_high, values_from = mean_percent) %>%
+  mutate(log2FC = log2(high / low),
+         percentage = CN_cluster) %>%
+  select(percentage, high, low, log2FC, , InTumour)
+
+p.values <- df_long %>%
+    group_by_at(c("CN_cluster", "InTumour")) %>%
+    group_modify(~{
+        return(data.frame(p.value=wilcox.test(percent ~ ThCD14_high, .x, exact=FALSE)$p.value))
+    })
+
+summary_df$p.value <- p.values$p.value
+```
+
+```{r}
+summary_df$CN_cluster_named <- matching[summary_df$percentage]
+
+ggplot(summary_df, aes(x=log2FC, y=-log10(p.value), color=CN_cluster_named)) +
+    geom_point(size=4, aes(shape=InTumour)) + 
+    geom_vline(xintercept=0, linetype="dashed") + 
+    geom_hline(yintercept = -log10(0.05), linetype="dashed") +
+  labs(x = "log2FC(high/low)", y = "-log10(p.value)",
+       title = "Sorin, all data, spatial nbhd")+
+    scale_color_manual(values=colors)+
+    theme(
+        #axis.title.y=element_blank(),
+        #strip.text.y = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")
+    )
+ggsave(file.path(output_folder, paste0("volcano_plot_ThCD14HighvsLow_CNclusters_in_out_tumor.png")))
+```
+
+## Pie chart
+
+```{r}
+plot_piechart <- function(summary_df2, subset_col, plot_title, colors){
+  data <- summary_df2[,c("CN_cluster", subset_col, "CN_cluster_named")]
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data[[subset_col]])
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Make the plot
+p <- ggplot(data, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=CN_cluster_named)) +
+  geom_rect() +
+  geom_label( x=2, aes(y=labelPosition, label=CN_cluster_named), size=4) +
+  scale_fill_manual(values=colors)+
+  labs(title = paste0("Sorin, nbhd: ", plot_title))+
+  coord_polar(theta="y") +
+  xlim(c(-1, 4)) +
+  theme_void() +
+  theme(legend.position = "none")
+return(p)
+}
+
+colnames(summary_df) <- gsub("percentage", "CN_cluster", colnames(summary_df))
+
+highIN <- plot_piechart(summary_df[summary_df$InTumour,],
+              "high", "ThCD14 high In Tumour", colors)
+
+highOUT <- plot_piechart(summary_df[!summary_df$InTumour,],
+              "high", "ThCD14 high Out Tumour", colors)
+
+lowIN <- plot_piechart(summary_df[summary_df$InTumour,],
+              "low", "ThCD14 low In Tumour", colors)
+
+lowOUT <- plot_piechart(summary_df[!summary_df$InTumour,],
+              "low", "ThCD14 low Out Tumour", colors)
+
+(highIN + highOUT)/(lowIN + lowOUT)
+
+ggsave(file.path(output_folder, paste0("piechart_ThCD14HighvsLow_CN6_in_out.pdf")))
+```
+
+## Bar plot
+
+```{r}
+test <- summary_df2 %>% pivot_longer(cols = c( "high", "low"))
+
+ggplot(test, aes(x = CN_cluster, y = value, fill = name))+
+  geom_bar(position="dodge", stat="identity")+
+  labs(title = "Sorin, cell nbhd",
+       xlab = "", ylab = "Mean of percentages")+
+  theme_bw()
+
+test2 <- df_long %>% group_by(Patient, CN_cluster, ThCD14_high) %>% summarise(sum = sum(percent))
+
+ggplot(test2, aes(x = CN_cluster, y = sum, fill = ThCD14_high))+
+  geom_boxplot(position="dodge")+
+  labs(title = "Sorin, cell nbhd",
+       xlab = "", ylab = "Percentages")+
+  theme_bw()
+```
+
+# Propeller
+
+```{r}
+library(limma)
+library(speckle)
+
+cn_res_filt <- cn_res_filt[cn_res_filt$CN.clusters != -1,]
+
+cn_res_filt$ThCD14_high <- Percentage_Sorin_cohort_Tumour_Th$ThCD14_high[match(cn_res_filt$Patient, Percentage_Sorin_cohort_Tumour_Th$Patient)]
+cn_res_filt$ThCD14_high <- ifelse(cn_res_filt$ThCD14_high,
+                                           "high", "low")
+
+cn_res_filt$immuneSubgroups <- ImmuneSubgroups$cluster[match(cn_res_filt$Patient,
+                                                             ImmuneSubgroups$patient)]
+
+
+test_with_propeller <- function(for_test_LM, cluster, plot_title){
+  tr_prop <- getTransformedProps(sample = paste0(for_test_LM$Patient, "_",
+                                                 for_test_LM$ThCD14_high, "_",
+                                                 for_test_LM$immuneSubgroups),
+                   clusters = for_test_LM[[cluster]],
+                   transform = "logit")
+  split_name <- strsplit2(colnames(tr_prop$Counts), "_")
+  group <- split_name[,3]
+  patient <- split_name[,2]
+  immuneSubgr <- split_name[,4]
+  design <- model.matrix(~ 0 + group + immuneSubgr)
+  colnames(design) <- gsub("group", "", colnames(design))
+  mycontr <- makeContrasts(high-low, levels=design)
+  res <- propeller.ttest(prop.list=tr_prop, design=design, 
+                         contrasts = mycontr,
+                         robust=TRUE, trend=FALSE, sort=TRUE)
+  
+  #plot_test_results(res, plot_title, radius)
+  return(res)
+}
+  
+  radius <- ""
+  test_with_propeller(cn_res_filt, "CN.clusters", "Sorin:cell nbhd")
+```
+

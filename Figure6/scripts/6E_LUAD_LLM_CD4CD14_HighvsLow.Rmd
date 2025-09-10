@@ -1,0 +1,420 @@
+---
+title: "Differential Gene Expression Analysis of the PanCK positive (Cancer) cells,
+  LUAD LLM CD4CD14 high vs low"
+author: "Ilariya, based on CM based on Belinda/Jared code"
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r}
+library(standR)
+library(edgeR)
+library(SpatialExperiment)
+library(limma)
+#library(Glimma)
+library(ggrepel)
+library(ggalluvial)
+library(scater)
+library(readxl)
+library(tidyverse)
+library(pheatmap)
+library(statmod)
+```
+
+# Reproducibility
+
+To ensure reproducibility, a fixed seed is set.
+```{r}
+set.seed(42)
+```
+
+# Load in Data
+
+```{r}
+# Set the directory and file name
+RDataObjectsDir = "../../ilaria/claires_part/rdata/"
+speCancerFileName = "speCancerMIBI_GeoMx.rds"
+
+# Read data from file
+speCancer <- readRDS(file=file.path(RDataObjectsDir, speCancerFileName))
+```
+
+
+# Analysis-Specific Filtering
+
+Only the LUAD cancer will be analysed for relapse free survival:
+```{r}
+head(speCancer$CancerType)
+keep <- speCancer$CancerType == "LUAD"
+table(keep)
+speCancer <- speCancer[,keep]
+```
+
+NEW: update immune subgroups
+
+```{r}
+CM_LUAD_immune_subgroups <- readRDS("~/cd14_paper/data/CM_LUAD_immune_subgroups.rds")
+table(CM_LUAD_immune_subgroups$cluster)
+speCancer$ImmuneSubgr <- CM_LUAD_immune_subgroups$cluster[match(speCancer$SampleName, CM_LUAD_immune_subgroups$patient)]
+```
+
+
+Only the LM and L cells will be analysed, L cells are excluded
+```{r}
+head(speCancer$ImmuneSubgr)
+keep <- speCancer$ImmuneSubgr != "M"
+table(keep)
+speCancer <- speCancer[,keep]
+```
+
+New: update CD4CD14 infiltration
+
+```{r}
+CM_cohort_Tumour_LLM_CD4CD14 <- readRDS("~/cd14_paper/data/Percentage_CM_cohort_Tumour_LLM_CD4CD14.rds")
+speCancer$CD4CD14_high <- CM_cohort_Tumour_LLM_CD4CD14$CD4CD14_high[match(speCancer$SampleName,
+                                                                               CM_cohort_Tumour_LLM_CD4CD14$Patient)]
+
+speCancer$PercentageCD4CD14 <- CM_cohort_Tumour_LLM_CD4CD14$PercentageCD4CD14[match(speCancer$SampleName,
+                                                                               CM_cohort_Tumour_LLM_CD4CD14$Patient)]
+```
+
+
+There is missing data on CD4CD14 infiltration. Filter out any samples with missing information
+```{r}
+table(speCancer$CD4CD14_high)
+table(is.na(speCancer$CD4CD14_high))
+keep <- !is.na(speCancer$CD4CD14_high)
+speCancer <- speCancer[,keep]
+# look at old vs new. why did we lost so much?
+table(speCancer$CD4CD14, speCancer$CD4CD14_high)
+#which patients did we lost?
+unique(speCancer$SampleName[speCancer$CD4CD14 == "high" & speCancer$CD4CD14_high == F])
+
+speCancer$CD4CD14_old <- speCancer$CD4CD14
+speCancer$CD4CD14 <- ifelse(speCancer$CD4CD14_high, "high", "low")
+```
+
+
+## Comparisons
+
+Starting with Sex: more male with high than female
+```{r}
+table(colData(speCancer)$CD4CD14, colData(speCancer)$Sex)
+barplot(table(colData(speCancer)$Sex, colData(speCancer)$CD4CD14), beside = TRUE, legend = TRUE, col = c(2 ,4), main = "Cd4CD14high and Sex")
+```
+Running a test of independence shows that the p-value is not significant
+```{r}
+summary(table(colData(speCancer)$CD4CD14, colData(speCancer)$Sex))
+```
+look at age
+
+younger people with CD4CD14high infiltration
+```{r}
+boxplot(colData(speCancer)$Age ~ colData(speCancer)$CD4CD14, col = c(2 ,4), main = "CD4CD14high and Age")
+```
+Running a linear model reveals non-significant correlation between CD4CD14 and Age
+```{r}
+summary(lm(colData(speCancer)$Age ~ colData(speCancer)$CD4CD14))
+```
+
+Next, we shall look at Smoking Status.
+
+```{r}
+table(colData(speCancer)$CD4CD14, colData(speCancer)$SmokingStatus)
+barplot(table(colData(speCancer)$CD4CD14, colData(speCancer)$SmokingStatus), beside = TRUE, legend = TRUE, col = c(2 ,4), main = "Cd4CD14high and Smoking Status")
+```
+
+# TMM normalization
+
+The next step is to undergo normalisation. TMM is used in the analysis
+
+Normalise using the standR function `geomxNorm`
+```{r}
+spe_tmm_cancer <- geomxNorm(speCancer, method = "TMM")
+```
+
+Convert to DGE object for Differential Gene Expression Analysis
+```{r}
+dgeCancer <- SE2DGEList(spe_tmm_cancer)
+```
+
+Copy over the norm factors manually as the norm.factors are not copied over by default
+```{r}
+dgeCancer$samples$norm.factors <- metadata(spe_tmm_cancer)$norm.factor
+
+dgeCancer$samples$group <- as.factor(dgeCancer$samples$CD4CD14)
+
+dgeCancer$samples <- dgeCancer$samples[, c("group", "lib.size", "norm.factors", "SampleName", "Age", "Sex",
+                                           "SmokingStatus", "ImmuneSubgr", "CD4CD14", "CD4CD14_old", 
+                                           "KRASmut", "EGFR", "TotImmuneInf", "CNV", "PercentageCD4CD14")]
+```
+
+Visualize the counts to ensure that normalisation worked properly.
+
+```{r}
+logcountsCancer <- cpm.DGEList(dgeCancer, log=TRUE)
+boxplot(logcountsCancer)
+```
+View the RLE plot as well to ensure the samples are good.
+
+```{r, fig.height=5, fig.width=20}
+plotRLExpr(spe_tmm_cancer, ordannots = "SlideName", assay = "logcounts", col = SampleName)
+```
+
+# DGE Analysis
+
+To make sure that we are looking at high-low, set order of levels in factor
+
+```{r}
+#dgeCancer$samples$CD4CD14[is.na(dgeCancer$samples$CD4CD14)] <- "non_relevant"
+
+cd14_status <- factor(dgeCancer$samples$CD4CD14, levels = c("low", "high"))
+age <- dgeCancer$samples$Age
+smoking_stat <- factor(dgeCancer$samples$SmokingStatus)
+
+designCancer <- model.matrix(~ cd14_status + age + smoking_stat)
+head(designCancer)
+```
+with normalisation
+```{r}
+par(mfrow=c(1,1))
+vCancer <- voomLmFit(dgeCancer, designCancer, plot = TRUE, span = 0.05, 
+                     block = dgeCancer$samples$SampleName,
+                     normalize.method="cyclicloess")
+```
+
+```{r}
+
+HVs <- vCancer[which(vCancer$Amean > 9 & vCancer$sigma > 1), ]
+
+plot(vCancer$Amean, sqrt(vCancer$sigma), pch=16, cex=0.3)
+
+points(HVs$Amean, sqrt(HVs$sigma), 
+       pch = 19, col = 2, cex = 0.5)
+text(HVs$Amean, sqrt(HVs$sigma),
+     labels = rownames(HVs$genes),
+     pos = 3, cex = 0.6, col = 2)
+```
+
+```{r}
+fitCancer <- eBayes(vCancer, robust = TRUE)
+```
+
+```{r}
+dim(fitCancer)
+```
+
+```{r}
+summa.fitCancer <- decideTests(fitCancer)
+summary(summa.fitCancer)
+```
+Sorts by B as default:
+```{r}
+topResultCancer <- topTable(fitCancer, coef = 2, sort.by = "p", n = Inf)
+topGenesCancer <- topTable(fitCancer, coef = 2, sort.by = "p", n = Inf, p.value = 0.05)
+```
+
+Remove columns as some are not of interest in this analysis
+```{r}
+topResultCancer <- subset(topResultCancer, select = c(GeneID, logFC, AveExpr, t, P.Value, adj.P.Val, B))
+topGenesCancer <- subset(topGenesCancer, select = c(GeneID, logFC, AveExpr, t, P.Value, adj.P.Val, B))
+```
+
+
+# GSEA
+
+The first approach is to take genes that are p.value & LFC acceptable (note: not adjusted as we have only 2 true DE with FDR < 0.05).
+Second approach is using camera test (which is much better in our case)
+
+## GO and KEGG
+
+```{r eval=FALSE}
+topResultsnonadjPval <- topResultCancer[topResultCancer$P.Value < 0.05,]
+topResultsnonadjPvalandLFC <- topResultsnonadjPval[topResultsnonadjPval$logFC > 0.5, ]
+
+all.ids <- topResultCancer$GeneID[!is.na(topResultCancer$GeneID)]
+ids <- topResultsnonadjPvalandLFC$GeneID
+# topResultsnonadjPval
+ids <- topResultsnonadjPval$GeneID
+signif.ids <- topGenesCancer$GeneID[!is.na(topGenesCancer$GeneID)]
+
+kegg = kegga(ids, species = "Hs", universe = all.ids)
+top.KEGG <- topKEGG(kegg, p.value = 0.05, number = 50)
+head(top.KEGG, n=20)
+write.csv(top.KEGG, file = "KEGG.res.PosLFC_high_inCD14_high.csv")
+
+go = goana(ids, species = "Hs", universe = all.ids)
+top.GO.BP <- topGO(go, ontology = "BP", number =100, p.value = 0.05)
+top.GO <- topGO(go, number =100, p.value = 0.05)
+head(top.GO, n=20)
+
+write.csv(top.GO.BP, file = "GO.res.PosLFC_high_inCD14_high.csv")
+```
+
+```{r plot_go, eval=FALSE}
+plot_GO_res <- function(top_go, n, direct, comp_name){
+  top_go <- top_go[1:n, c(1:3, which(endsWith(colnames(top_go), direct)))]
+  colnames(top_go) <- gsub(paste0("P.",direct),"P.val",colnames(top_go))
+  top_go$Prop <- top_go[[direct]]/top_go$N
+  top_go <- top_go[order(-top_go$P.val), ]
+  top_go$Term <- factor(top_go$Term, levels = top_go$Term)
+  top_go$Ont <- as.factor(top_go$Ont)
+
+p <- ggplot(top_go, aes(x = Term, y = log10(P.val), size = Prop)) +
+  geom_point(stat = "identity", aes(colour = Ont)) +
+  ggtitle(paste0("Gene Ontology Top ",n, "\n",direct)) +
+  labs(size = paste0("Prop of Term ", direct), col = "Ontology") +
+  scale_colour_manual(values = c("#FF9DA7", "#4E79A7", "#59A14F")) +
+  ylab("Log10 of pValue") + theme_minimal() + coord_flip()
+ggsave(paste0("output/plots/GO", "_",direct,"_",comp_name,".png"),
+       plot = p, width = 9, height = 7, units = "in", bg = "white")
+return(p)
+}
+```
+
+```{r eval=FALSE}
+plot_GO_res(top.GO.BP, n=20, direct = "DE", comp_name = "cd14_high")
+```
+
+
+```{r plot_kegg, eval=FALSE}
+plot_KEGG_res <- function(top_kegg, n, direct, comp_name){
+  top_kegg <- top_kegg[1:n,]
+  colnames(top_kegg) <- gsub(paste0("P.",direct),"P.val",colnames(top_kegg))
+  top_kegg$Prop <- top_kegg[[direct]]/top_kegg$N
+  top_kegg <- top_kegg[order(-top_kegg$P.val), ]
+  top_kegg$Pathway <- factor(top_kegg$Pathway, levels = top_kegg$Pathway)
+
+p <- ggplot(top_kegg, aes(x = Pathway, y = log10(P.val), size = Prop)) +
+  geom_point(stat = "identity", aes(colour = N)) +
+  ggtitle(paste0("KEGG Top ",n, "\n",direct, " in ",comp_name)) +
+  labs(size = paste0("Prop of path ", direct), col = "Path size") +
+  ylab("Log10 of pValue") + theme_minimal() + coord_flip()
+ggsave(paste0("output/plots/kegg_",comp_name, ".png"),
+       plot = p, width = 9, height = 7, units = "in", bg = "white")
+return(p)
+}
+```
+
+```{r eval=FALSE}
+plot_KEGG_res(top.KEGG, n=30, direct="DE", comp_name = "cd14_high")
+```
+
+## Using `camera` for GSEA
+
+Belinda suggested to use `camera`
+
+### KEGG
+
+```{r eval=FALSE}
+Hs.KEGG <- readRDS("data/Hs.c2.cp.kegg.v7.1.entrez.rds")
+ind <- ids2indices(Hs.KEGG, dgeCancer$genes$GeneID)
+test <- camera(vCancer$EList$E, index=ind, design = vCancer$design, 
+               contrast="cd14_statushigh", weights = vCancer$EList$weights)
+write.csv(test[test$FDR < 0.05,], file = "output/csv/cancerLUADLLMCD4CD14_KEGG.csv")
+```
+
+### Reactome
+
+```{r eval=FALSE}
+Hs.reactome <- readRDS("data/Hs.c2.cp.reactome.v7.1.entrez.rds")
+ind <- ids2indices(Hs.reactome, dgeCancer$genes$GeneID)
+test <- camera(vCancer$EList$E, index=ind, design = designCancer, contrast="cd14_statushigh")
+write.csv(test[test$FDR < 0.05,], file = "output/csv/cancerLUADLLMCD4CD14_reactome_cd14_high.csv")
+```
+
+### Functions
+
+```{r}
+run.camera.with.db <- function(vCancer, db, contrast){
+  ind <- ids2indices(db, vCancer$genes$GeneID)
+  test <- camera(vCancer$EList$E, index=ind, design = vCancer$design, 
+               contrast=contrast, weights = vCancer$EList$weights)
+  res <- list(index = ind, test = test)
+  res
+}
+
+get.genes.from.pathways.with.name <- function(camera.results, name, de.results, vCancer, fitCancer, contrast){
+  camera.test.res <- camera.results$test
+  ind <- camera.results$index
+  subset.of.interest <- camera.test.res[grepl(name, rownames(camera.test.res), ignore.case = T),]
+  r.go <- rownames(subset.of.interest)
+  
+  wb <- createWorkbook()
+  addWorksheet(wb = wb, sheetName = paste0("list_with_",name))
+  writeData(wb = wb, sheet = 1, x = subset.of.interest, rowNames = T)
+  
+  for (i in 1:length(r.go)) {
+    
+    # get list of genes and write in 
+      gene.list.from.go <- vCancer$genes[ind[[r.go[i]]],]
+      res.sub.table <- de.results[match(gene.list.from.go$GeneID, de.results$GeneID),
+                                    c("logFC", "t", "AveExpr", "adj.P.Val")]
+      gene.list.from.go <- cbind(gene.list.from.go, res.sub.table)
+      #sheet.name <- paste0(substr(r.go[i], 1, 9),"_",substr(r.go[i], str_length(r.go[i])-20, str_length(r.go[i])))
+      sheet.name <- paste0(substr(r.go[i], 1, 30), i)
+      addWorksheet(wb = wb, sheetName = sheet.name)
+      writeData(wb = wb, sheet = i+1, x = gene.list.from.go, rowNames = T)
+      
+      # get a barcode plot and save it as pdf
+      #path.dir.pdf <- "./output/pdf/"
+      #pdf(file = paste0(path.dir.pdf,"barcode_", r.go[i], ".pdf"), 
+        #  width=8, height=5)
+      p <- barcodeplot(fitCancer$t[,contrast], index = ind[[r.go[i]]], main = r.go[i])
+      print(p)
+      #dev.off()
+  }
+  
+  #path.to.csv <- "./output/csv/"
+  #saveWorkbook(wb, paste0(path.to.csv,"Paths_with_",name,"_in_name.xlsx"), overwrite = TRUE)
+}
+```
+
+### Hallmark
+
+```{r}
+# contrast "cd14levelhigh"
+
+#Hs.GO.BP <- readRDS("data/Hs.c5.bp.v7.1.entrez.rds")
+#Hs.reactome <- readRDS("data/Hs.c2.cp.reactome.v7.1.entrez.rds")
+hallmark.db <- readRDS("../../ilaria/spe_sorin/data/Hs.h.all.v7.1.entrez.rds")
+#GO.res <- run.camera.with.db(vCancer = vCancer, db = Hs.GO.BP)
+#reactome.res <- run.camera.with.db(vCancer = vCancer, db = Hs.reactome)
+#kegg.res <- run.camera.with.db(vCancer = vCancer, db = Hs.KEGG)
+hallmark.res <- run.camera.with.db(vCancer = vCancer, db = hallmark.db, contrast = "cd14_statushigh")
+
+barcodeplot(fitCancer$t[,2], index = hallmark.res$index$HALLMARK_TNFA_SIGNALING_VIA_NFKB)
+
+#get.genes.from.pathways.with.name(GO.res, "MHC_CLASS_I", de.results = topResultCancerCD4, vCancer, #fitCancer)
+#get.genes.from.pathways.with.name(kegg.res, "CYTOKINE_CYTOKINE", de.results = topResultCancerCD4, vCancer, #fitCancer)
+#get.genes.from.pathways.with.name(kegg.res, "NATURAL_KILLER", de.results = topResultCancerCD4, vCancer, #fitCancer)
+#get.genes.from.pathways.with.name(kegg.res, "OXIDATIVE_PHOSPH", de.results = topResultCancerCD4, vCancer, #fitCancer)
+#get.genes.from.pathways.with.name(reactome.res, "OXIDATIVE_PHOSPH", de.results = topResultCancerCD4, #vCancer, fitCancer)
+#
+#get.genes.from.pathways.with.name(hallmark.res, "TNFA_SIGNALING", de.results = topResultCancer,
+#                                  vCancer, fitCancer, contrast = "cd14_statushigh")
+#
+#write.csv(hallmark.res$test[hallmark.res$test$FDR < 0.05,], file = #"output/csv/GSEA_hallmark_cd14_high.csv")
+```
+
+
+```{r}
+roast(vCancer$EList$E, design = vCancer$design, contrast = "cd14_statushigh",
+      index = hallmark.res$index$HALLMARK_TNFA_SIGNALING_VIA_NFKB)
+# mixed 0.0075
+# Up 0.063
+```

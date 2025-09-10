@@ -1,0 +1,244 @@
+---
+subtitle: "Immune subgroups LUSC"
+title: "Supp Figure 3"
+author: "Claire, Marceaux, Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(ggplot2)
+library(patchwork)
+library(pheatmap)
+library(RColorBrewer)
+library(dplyr)
+library(tidyr)
+library(survival)
+library(survminer)
+
+```
+
+# Preparation
+
+Read the data
+
+```{r}
+cells_Enfield <- readRDS(file="../../data/Enfield_tumor_cells_info.rds")
+patient_survival_Enfield <- readRDS(file="../../data/Enfield_patient_survival.rds")
+patient_counts_CM <- readRDS(file="../../data/CM_patient_counts_no_compartment_all_FM_TRM_df.rds")
+```
+
+Source the functions 
+
+```{r source_functions}
+source('../../src/calculate_cell_type_percentages.R')
+source('../../src/plot_heatmap_immune_subgroups.R')
+#source the colors
+immune_subgroup_colors <- readRDS("../../data/immune_subgroup_colors.rds")
+```
+
+Set the output folder
+
+```{r}
+output_folder <- "../plots/"
+```
+
+# CM_LUSC
+
+## Prepare the data
+
+```{r}
+CM_patient_counts_NSCLC_LUSC <-patient_counts_CM %>% 
+    filter(patient_counts_CM$`Cancer Type`=="LUSC")
+```
+
+```{r}
+CM_percentage_LUSC <- CM_patient_counts_NSCLC_LUSC %>%
+  filter(`Immune cells` >= 5) %>%
+  transmute(
+    Patient = Patient,
+    PercentageLymphoidCells = (`Lymphoid cells` / `Immune cells`) * 100,
+    PercentageMyeloidCells = (`Myeloid cells` / `Immune cells`) * 100
+  )
+```
+
+## Clustering with kmean 3
+
+```{r}
+pm <- as.matrix(CM_percentage_LUSC[,-which(colnames(CM_percentage_LUSC) == "Patient")], rownames.force = T)
+rownames(pm) <- CM_percentage_LUSC[["Patient"]]
+
+set.seed(42)
+kmean_res3 <- kmeans(pm, centers = 3, nstart = 25)
+
+CM_percentage_LUSC$kmean_cluster3 <- as.factor(kmean_res3$cluster)
+CM_patient_counts_NSCLC_LUSC$kmean_cluster3 <- as.factor(kmean_res3$cluster)
+levels(CM_percentage_LUSC$kmean_cluster3) <- c("L", "M", "LM")
+levels(CM_patient_counts_NSCLC_LUSC$kmean_cluster3) <- c("L", "M", "LM")
+```
+
+## Heatmap for k3 immune subgroups
+
+```{r fig.height= 5, fig.width= 12}
+# re-order levels to make sure that it's correct for plotting
+CM_percentage_LUSC$kmean_cluster3 <- factor(CM_percentage_LUSC$kmean_cluster3, levels = c("L", "LM", "M"))
+table(CM_percentage_LUSC$kmean_cluster3)
+
+order_of_patients <- plot_immune_subgr_heatmap(CM_percentage_LUSC, kmean_column = "kmean_cluster3", 
+                          percentage_matrix = pm, cohort = "CM_LUSC", immune_subgroup_colors, output_folder)
+saveRDS(order_of_patients, file = "../../data/CM_LUSC_k3_immune_subgroups.rds")
+```
+
+## Clustering with kmean 2
+
+```{r}
+pm <- as.matrix(CM_percentage_LUSC[,startsWith(colnames(CM_percentage_LUSC), "Percentage")], rownames.force = T)
+rownames(pm) <- CM_percentage_LUSC[["Patient"]]
+
+set.seed(42)
+kmean_res2 <- kmeans(pm, centers = 2, nstart = 25)
+
+CM_percentage_LUSC$kmean_cluster2 <- as.factor(kmean_res2$cluster)
+CM_patient_counts_NSCLC_LUSC$kmean_cluster2 <- as.factor(kmean_res2$cluster)
+levels(CM_percentage_LUSC$kmean_cluster2) <- c("M", "LM")
+levels(CM_patient_counts_NSCLC_LUSC$kmean_cluster2) <- c("M", "LM")
+```
+
+## Heatmap for k2 immune subgroups
+
+```{r fig.height= 5, fig.width= 12}
+# re-order levels to make sure that it's correct for plotting
+CM_percentage_LUSC$kmean_cluster2 <- factor(CM_percentage_LUSC$kmean_cluster2, levels = c("LM", "M"))
+table(CM_percentage_LUSC$kmean_cluster2)
+# making sure that colors are following the level order
+colors <- immune_subgroup_colors[match(levels(CM_percentage_LUSC$kmean_cluster2),
+                                       names(immune_subgroup_colors), nomatch = NA)]
+order_of_patients <- plot_immune_subgr_heatmap(CM_percentage_LUSC, kmean_column = "kmean_cluster2", 
+                          percentage_matrix = pm, cohort = "CM_LUSC", colors, output_folder)
+saveRDS(order_of_patients, file = "../../data/CM_LUSC_k2_immune_subgroups.rds")
+```
+
+# Enfield_LUSC
+
+## Prepare the data
+
+Create a per patient and per region data frame summary
+```{r}
+# First, count the occurrences of each majorType for each Patient
+patient_counts_Enfield <- cells_Enfield %>%
+  group_by(Patient, majorType) %>%
+  summarize(count = n(), .groups = 'drop')
+
+region_counts_Enfield <- cells_Enfield %>%
+  group_by(CRUK_RegionID, majorType) %>%
+  summarize(count = n(), .groups = 'drop')
+
+# Reshape the data frame to have each majorType as a column
+patient_counts_Enfield <- patient_counts_Enfield %>%
+  spread(key = majorType, value = count, fill = 0)
+
+region_counts_Enfield <- region_counts_Enfield %>%
+  spread(key = majorType, value = count, fill = 0)
+```
+
+work only on patient count for now to see if enough
+Create summarized column with total of cells
+```{r}
+patient_counts_Enfield <- patient_counts_Enfield %>% mutate(TotalCells = rowSums(.[,2:12]),
+                                                            ImmuneCells = rowSums(select(.,3,4,5,8,9,10,11 )),
+                                                            LymphoidCells = rowSums(select(.,3,4,5,11)),
+                                                            MyeloidCells = rowSums(select(.,8,9,10 )))
+```
+
+Calculate the percentage of Lymphoid and Myeloid cells of the total Immune
+```{r}
+percentage_Enfield <- patient_counts_Enfield %>%
+  filter(ImmuneCells >= 5) %>%
+  transmute(
+    Patient = Patient,
+    PercentageLymphoidCells = (LymphoidCells / ImmuneCells) * 100,
+    PercentageMyeloidCells = (MyeloidCells / ImmuneCells) * 100
+  )
+```
+
+Merge cancer type to then filter to keep only LUSC
+```{r}
+# Rename columns for easier handling (if necessary)
+names(patient_survival_Enfield)[names(patient_survival_Enfield) == "histology_multi_full_genomically.confirmed"] <- "cancerType"
+# Select only the necessary column from patient_survival
+patient_survival_subset <- patient_survival_Enfield[, c("cruk_id", "cancerType")]
+# Merge the data frames based on the matching columns
+percentage_Enfield_Cancer <- merge(percentage_Enfield, patient_survival_subset,
+                     by.x = "Patient", by.y = "cruk_id",
+                     all.x = TRUE)
+percentage_Enfield_LUSC <- percentage_Enfield_Cancer %>%
+  filter (cancerType=="LUSC")
+percentage_Enfield_LUSC <-percentage_Enfield_LUSC%>% select(-cancerType)
+```
+
+## Clustering with kmean 3
+
+```{r}
+pm3 <- as.matrix(percentage_Enfield_LUSC[,-1], rownames.force = T)
+rownames(pm3) <- percentage_Enfield_LUSC[,1]
+```
+
+```{r}
+set.seed(42)
+kmean_res3 <- kmeans(pm3, centers = 3, nstart = 25)
+
+percentage_Enfield_LUSC$kmean_cluster3 <- as.factor(kmean_res3$cluster)
+levels(percentage_Enfield_LUSC$kmean_cluster3) <- c("L", "LM", "M")
+table(percentage_Enfield_LUSC$kmean_cluster3)
+```
+
+## Heatmap for k3 immune subgroups
+
+```{r Heatmaps_unscaled, fig.height= 5, fig.width= 12}
+order_of_patients <- plot_immune_subgr_heatmap(percentage_Enfield_LUSC, kmean_column = "kmean_cluster3", 
+                          percentage_matrix = pm3, cohort = "Enfield_LUSC", immune_subgroup_colors, output_folder)
+saveRDS(order_of_patients, file = "../../data/Enfield_LUSC_k3_immune_subgroups.rds")
+```
+
+## Clustering with kmean 2
+
+```{r}
+pm3 <- as.matrix(percentage_Enfield_LUSC[,startsWith(colnames(CM_percentage_LUSC), "Percentage")], rownames.force = T)
+rownames(pm3) <- percentage_Enfield_LUSC[["Patient"]]
+```
+
+```{r}
+set.seed(42)
+kmean_res2 <- kmeans(pm3, centers = 2, nstart = 25)
+
+percentage_Enfield_LUSC$kmean_cluster2 <- as.factor(kmean_res2$cluster)
+levels(percentage_Enfield_LUSC$kmean_cluster2) <- c("M", "LM")
+```
+
+## Heatmap for k2 immune subgroups
+
+```{r fig.height= 5, fig.width= 12}
+# re-order levels to make sure that it's correct for plotting
+percentage_Enfield_LUSC$kmean_cluster2 <- factor(percentage_Enfield_LUSC$kmean_cluster2, levels = c("LM", "M"))
+table(percentage_Enfield_LUSC$kmean_cluster2)
+# making sure that colors are following the level order
+colors <- immune_subgroup_colors[match(levels(percentage_Enfield_LUSC$kmean_cluster2),
+                                       names(immune_subgroup_colors), nomatch = NA)]
+order_of_patients <- plot_immune_subgr_heatmap(percentage_Enfield_LUSC, kmean_column = "kmean_cluster2", 
+                          percentage_matrix = pm3, cohort = "Enfield_LUSC", colors, output_folder)
+saveRDS(order_of_patients, file = "../../data/Enfield_LUSC_k2_immune_subgroups.rds")
+```

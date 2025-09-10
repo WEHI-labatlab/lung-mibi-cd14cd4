@@ -1,0 +1,229 @@
+---
+subtitle: "Figure 3 supp"
+title: "Violin plot for M-NeutroHigh vs other immune subgroup"
+author: "Ilariya Tarasova"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+```{r}
+output_folder <- "../plots/"
+if (!dir.exists(output_folder)){
+    dir.create(output_folder, recursive = T)
+}
+```
+
+# Request
+
+> Sorin with CN spatial cluster, can you plot the violine plot to compare CN between the subgroup M-NeutroHigh vs L and another violine plot comparing M-NeutroHigh vs all the other subgroups combined (whole tissue only) – for maybe supp fig 3
+
+# Read the data
+
+the patient counts and new immune subgroups
+
+```{r}
+cn_res <- readRDS(file="../../Figure6/interim_data/out_CN6_Sorin_immune_only_new_kmean.rds")
+#Percentage_Sorin_cohort_Tumour_Th <- readRDS("../../Figure2/interim_data/Percentage_Sorin_cohort_Tumour_MLLM_CD4CD14.rds")
+#Sorin_cell_info <- readRDS(file="../../data/Sorin_cell_info.rds")
+ImmuneSubgroups <- readRDS(file="../../data/Sorin_LUAD_immune_subgroups.rds")
+patients_with_high_Neutr <- readRDS(file = "../../Figure3/interim_data/patients_with_high_Neutr_Sorin.rds")
+```
+
+
+## Add 
+
+```{r}
+#cn_res$InTumour <- Sorin_cell_info$InTumour[match(cn_res$cell.id, rownames(Sorin_cell_info))]
+
+cn_res$Patient <- paste0("LUAD_", cn_res$Image.x)
+```
+
+
+# Summarise
+
+```{r}
+cn_counts <- cn_res %>% 
+  group_by(Patient, CN.clusters) %>% 
+  summarise(count = n(), .groups = "drop")
+
+  clustered_counts <- cn_counts %>%
+  filter(CN.clusters != -1) %>%
+  group_by(Patient) %>%
+  summarise(CN = sum(count), .groups = "drop")
+
+# Step 2: Join back to original df
+total_cn_counts <- cn_counts %>%
+  filter(CN.clusters != -1) %>%
+  left_join(clustered_counts, by = c("Patient"))
+
+total_cn_counts$CN.clusters <- paste0("CN.", total_cn_counts$CN.clusters)
+total_cn_counts_wide <- pivot_wider(total_cn_counts, names_from = "CN.clusters",
+                                    values_from = "count", values_fill = 0)
+```
+
+## annotate with M-NeitroHigh
+
+
+```{r}
+total_cn_counts_wide$high_in_Neutr <- ifelse(total_cn_counts_wide$Patient %in% patients_with_high_Neutr,
+                                              "yes", "no")
+total_cn_counts_wide$immuneSubgroups <- ImmuneSubgroups$cluster[match(total_cn_counts_wide$Patient, ImmuneSubgroups$patient)]
+total_cn_counts_wide$high_in_Neutr_subgr <- as.character(total_cn_counts_wide$immuneSubgroups)
+# We are interested in patients from M subgroup that are high in Neutrophils
+total_cn_counts_wide$high_in_Neutr_subgr <- ifelse(total_cn_counts_wide$high_in_Neutr_subgr == "M" &
+                                                  total_cn_counts_wide$high_in_Neutr == "yes",
+                                              "M_Neutr_high", total_cn_counts_wide$high_in_Neutr_subgr)
+total_cn_counts_wide$high_in_Neutr_subgr <- ifelse(total_cn_counts_wide$high_in_Neutr_subgr == "M" &
+                                                  total_cn_counts_wide$high_in_Neutr == "no",
+                                              "M_Neutr_low", total_cn_counts_wide$high_in_Neutr_subgr)
+# the order of the levels are in the way that the first one is a reference level
+total_cn_counts_wide$high_in_Neutr_subgr <- factor(total_cn_counts_wide$high_in_Neutr_subgr,
+                                                    levels = c("M_Neutr_high" ,"M_Neutr_low","LM", "L"))
+
+# for the average
+total_cn_counts_wide$only_Neutr_subgr <- total_cn_counts_wide$high_in_Neutr_subgr
+total_cn_counts_wide$only_Neutr_subgr <- ifelse(total_cn_counts_wide$only_Neutr_subgr == "M_Neutr_high", 
+                                                "M_Neutr_high", "other")
+```
+
+```{r}
+df_long <- total_cn_counts_wide %>%
+  pivot_longer(cols = starts_with("CN."), names_to = "CN_cluster", values_to = "count_in_cluster") %>%
+  mutate(percent = 100 * count_in_cluster / CN)
+
+# how many patients
+length(unique(df_long$Patient))
+# 416
+```
+
+# Visualisation
+
+## Box plot
+
+```{r}
+immune_subgr_col <- c(M_Neutr_high = "#0868ac",
+                      M_Neutr_low = "#43a2ca",
+                      LM = "goldenrod1", L = "tomato1")
+
+CN_cluster_col <- c(
+  "CN.1" = "goldenrod1",
+  "CN.2" = "red",
+  "CN.3" = "cyan4",
+  "CN.4" = "seagreen1",
+  "CN.5" = "chocolate4",
+  "CN.6" = "turquoise1"
+)
+matching <- c(
+  "CN.1" = "CD4",
+  "CN.2" = "B",
+  "CN.3" = "MyeloT",
+  "CN.4" = "Neutro",
+  "CN.5" = "CD8",
+  "CN.6" = "Macro"
+)
+df_long$CN_cluster_named <- matching[df_long$CN_cluster]
+
+ggplot(df_long, aes(x=high_in_Neutr_subgr, y=percent, fill=CN_cluster)) + 
+    geom_boxplot()+
+  scale_fill_manual(values=CN_cluster_col, labels = matching)+
+  theme_bw()
+  #scale_fill_discrete(labels = matching)
+
+ggplot(df_long, aes(x=CN_cluster, y=percent, fill=high_in_Neutr_subgr)) + 
+    geom_boxplot()+
+  scale_fill_manual(values=immune_subgr_col)+
+  theme_bw()
+```
+
+## Volcano
+
+### M vs L
+
+```{r}
+#average percentage per cluster and high_in_Neutr_subgr group
+summary_df <- df_long %>%
+  group_by(CN_cluster, high_in_Neutr_subgr) %>%
+  summarise(mean_percent = mean(percent), .groups = "drop") %>%
+  pivot_wider(names_from = high_in_Neutr_subgr, values_from = mean_percent) %>%
+  mutate(log2FC = log2(M_Neutr_high / L)) 
+
+p.values <- df_long %>%
+  filter(high_in_Neutr_subgr %in% c("M_Neutr_high", "L")) %>% 
+    group_by_at(c("CN_cluster")) %>%
+    group_modify(~{
+        return(data.frame(p.value=wilcox.test(percent ~ high_in_Neutr_subgr, .x, exact=FALSE)$p.value))
+    })
+
+summary_df$p.value <- p.values$p.value
+```
+
+```{r}
+summary_df$CN_cluster_named <- matching[summary_df$CN_cluster]
+ggplot(summary_df, aes(x=log2FC, y=-log10(p.value), colour = CN_cluster)) +
+    geom_point(size=4, ) + 
+    geom_vline(xintercept=0, linetype="dashed", colour = "grey60") + 
+    geom_hline(yintercept = -log10(0.05), linetype="dashed", colour = "grey60") +
+  labs(x = "log2FC(M_Neutr_high/L)", y = "-log10(p.value)",
+       title = "Sorin, all data, spatial nbhd, M_Neutr_high vs L")+
+    scale_color_manual(values=CN_cluster_col, labels = matching)+
+    theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")
+    )
+ggsave(file.path(output_folder, paste0("volcano_M_Neutr_high_vs_L.png")))
+```
+
+### M vs the rest
+
+```{r}
+#average percentage per cluster and only_Neutr_subgr group
+summary_df2 <- df_long %>%
+  group_by(CN_cluster, only_Neutr_subgr) %>%
+  summarise(mean_percent = mean(percent), .groups = "drop") %>%
+  pivot_wider(names_from = only_Neutr_subgr, values_from = mean_percent) %>%
+  mutate(log2FC = log2(M_Neutr_high / other)) 
+
+p.values <- df_long %>%
+    group_by_at(c("CN_cluster")) %>%
+    group_modify(~{
+        return(data.frame(p.value=wilcox.test(percent ~ only_Neutr_subgr, .x, exact=FALSE)$p.value))
+    })
+
+summary_df2$p.value <- p.values$p.value
+```
+
+```{r}
+summary_df2$CN_cluster_named <- matching[summary_df2$CN_cluster]
+ggplot(summary_df2, aes(x=log2FC, y=-log10(p.value), colour = CN_cluster)) +
+    geom_point(size=4, ) + 
+    geom_vline(xintercept=0, linetype="dashed", colour = "grey60") + 
+    geom_hline(yintercept = -log10(0.05), linetype="dashed", colour = "grey60") +
+  labs(x = "log2FC(M_Neutr_high/other)", y = "-log10(p.value)",
+       title = "Sorin, all data, spatial nbhd, M_Neutr_high vs the rest")+
+    scale_color_manual(values=CN_cluster_col, labels = matching)+
+    theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")
+    )
+ggsave(file.path(output_folder, paste0("volcano_M_Neutr_high_vs_other.png")))
+```

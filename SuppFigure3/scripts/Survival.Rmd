@@ -1,0 +1,276 @@
+---
+subtitle: "Figure 3 supp"
+title: "Survival plots"
+author: "Ilariya Tarasova, Claire Marceaux"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(survival)
+library(survminer)
+```
+
+```{r}
+#file from Kenta
+source("../../src/calculate_cell_type_percentages.R")
+```
+
+```{r}
+output_folder <- "../plots/"
+if (!dir.exists(output_folder)){
+    dir.create(output_folder, recursive = T)
+}
+```
+
+# Functions 
+
+## Plotting Kaplan Meir curves
+
+```{r}
+immune_subgroup_colors <- readRDS("../../data/immune_subgroup_colors.rds")
+
+survival_plot <- function(fit, data_fr, column, survival_type, output_folder, title_plot){
+  cols <- switch(column,
+                 "high_in_Neutr_subgr" = c(M_Neutr_high = "#0868ac", 
+                                           M_Neutr_low = "#43a2ca", 
+                                           LM = "goldenrod1", L = "tomato1"),
+                 "immuneSubgr" = immune_subgroup_colors,
+                 "ThCD14_high" = c("magenta", "darkmagenta"),
+                 "B_high" = c("cornflowerblue","mediumvioletred"))
+  
+  #show_risk_tbl <- switch(survival_type,
+  #                        "OS" = F,
+  #                        "RFS" = T)
+
+  plot_file_name = paste0(output_folder, paste0(title_plot, "_", survival_type, "_",column), ".jpg")
+  print(ggsurvplot(fit, 
+             palette = cols,
+             #risk.table = show_risk_tbl,
+             xlab = "Time in Years", 
+             ylab = "Survival Probability",
+             title = paste(title_plot, survival_type),
+              legend.title = "Immune subgroups",
+             legend.labs = levels(data_fr[[column]])
+             )
+    )
+  ggsave(file = plot_file_name,
+         width = 7, height = 7, units = "in")
+}
+```
+
+## Main function with stats
+
+```{r}
+do_survival_analysis <- function(data_fr, column, survival_type, output_folder, plot_title){
+  y <- switch(survival_type,
+              "OS" = "Surv(OS_years, Death)",
+              "RFS" = "Surv(RFS_years, Relapse)")
+  x <- column
+  form = as.formula(paste(y, "~", x))
+  fit <- surv_fit(form, data = data_fr)
+  survival_plot(fit, data_fr, column, survival_type, output_folder, plot_title)
+  
+  # need to change reference level for stats
+  if(column == "immuneSubgr"){
+    data_fr$immuneSubgr <- factor(data_fr$immuneSubgr, levels = c("M", "LM", "L"))
+  }
+  coxfit <- coxph(form, data = data_fr) 
+  
+  return(summary(coxfit))
+}
+```
+
+
+The `survfit()` function gives only one p-value from log rank test (two groups). To perform test between multiple groups, I used Cox Proportional Hazards regression model, implemented in `coxph()` function of the *survival* package. Taken from [here](https://www.biostars.org/p/401657/). 
+
+
+The hazard ratios (HRs) are given by:
+
++exp(coef), HR
++exp(-coef), HR flipped the other way
++lower .95, lower 95% CI of the HR
++upper .95, upper 95% CI of the HR
+
+
+# Data prep
+
+## Load the data
+
+```{r}
+# read the patient counts
+patient_counts <- readRDS(file="../../data/CM_patient_counts_compartment_3_all_FM_TRM_macro_CD14_TRM_df.rds")
+LUAD_ImmuneSubgroups <- readRDS(file="../../data/CM_LUAD_immune_subgroups.rds")
+LUSC_ImmuneSubgroups <- readRDS(file="../../data/CM_LUSC_k2_immune_subgroups.rds")
+
+```
+
+Update immune subgrups info
+
+```{r}
+luad_patient_counts <- patient_counts[patient_counts$`Cancer Type` == "LUAD",]
+luad_patient_counts$immuneSubgr <- LUAD_ImmuneSubgroups$cluster[match(luad_patient_counts$Patient, LUAD_ImmuneSubgroups$patient)]
+table(luad_patient_counts$immuneSubgr)
+lusc_patient_counts <- patient_counts[patient_counts$`Cancer Type` == "LUSC",]
+lusc_patient_counts$immuneSubgr <- LUSC_ImmuneSubgroups$cluster[match(lusc_patient_counts$Patient, LUSC_ImmuneSubgroups$patient)]
+```
+
+# LUAD
+
+## Prepare the table
+
+```{r}
+survival_CM_LUAD <- luad_patient_counts[, c("Patient", "Cancer Type", 'Date of death', "MIBI clusters",
+                                            'OS (days)', 'Vital status', 'RFS (days)', 'Relapse', "immuneSubgr")]
+survival_CM_LUAD <- survival_CM_LUAD[!duplicated(survival_CM_LUAD),]
+
+#new_col_names <- c("OS_years", "Death", "RFS_years", "Relapse")
+survival_CM_LUAD$OS_years <- round(survival_CM_LUAD$'OS (days)'/365.25, 2)
+survival_CM_LUAD$Death <- as.logical(survival_CM_LUAD$`Vital status`) # no invert here!
+survival_CM_LUAD$RFS_years <- round(survival_CM_LUAD$'RFS (days)'/365.25, 2)
+# sanity check here is NA in 'Date of death' column!
+head(survival_CM_LUAD)
+
+```
+
+## OS LUAD
+
+```{r}
+table(survival_CM_LUAD$immuneSubgr)
+
+do_survival_analysis(survival_CM_LUAD, "immuneSubgr", "OS",
+                     output_folder, plot_title = "LUAD_CM")
+```
+
+## RFS: LLM, B high vs B low
+
+### Calculate percentage of B cells
+
+By compartment
+
+```{r}
+patient_counts <- luad_patient_counts %>%
+    filter(`Cancer Type` == "LUAD" & immuneSubgr != "M")
+
+# group col name
+group_cols <- c("Patient", "RFS (days)", "Relapse", "Compartment (3)")
+
+# cell types of interest
+cell_types <- c(
+    "B cells"
+)
+
+# the parent subtype
+parent_type <- c("Immune cells")
+```
+
+```{r}
+# calculate the proportions
+percentages_df <- calculate_cell_type_percentages(patient_counts, group_cols, cell_types, parent_type)
+
+# we need to filter out the proportions with less than 5 cells
+percentages_df <- percentages_df %>% 
+    filter(parent_type_count >= 5)
+```
+
+```{r}
+# group col name
+group_cols <- c("Patient", "RFS (days)", "Relapse")
+
+# calculate the proportions
+percentages_df_no_comp <- calculate_cell_type_percentages(patient_counts, group_cols, cell_types, parent_type)
+
+# we need to filter out the proportions with less than 5 cells
+percentages_df_no_comp <- percentages_df_no_comp %>% 
+    filter(parent_type_count >= 5)
+```
+
+
+### RFS, Tumour Core, lower and upper q
+
+```{r}
+quantiles <- quantile(percentages_df %>% filter(`Compartment (3)`=="Tumour Core") %>% pull(value), probs = seq(0, 1, 0.25))
+percentages_df$B_high <- "Medium"
+percentages_df$B_high[percentages_df$value <= quantiles[2]] <- "Low"
+percentages_df$B_high[percentages_df$value >= quantiles[4]] <- "High"
+
+percentages_df_filt <- percentages_df %>% filter(!is.na(!!as.name("Relapse"))) %>% 
+  filter(`Compartment (3)`=="Tumour Core") %>% filter(B_high!="Medium")
+
+survival_LUAD_RFS_B <- survival_CM_LUAD[survival_CM_LUAD$Patient %in% percentages_df_filt$Patient,]
+survival_LUAD_RFS_B$B_high <- percentages_df_filt$B_high[match(survival_LUAD_RFS_B$Patient, percentages_df_filt$Patient)]
+
+table(survival_LUAD_RFS_B$B_high)
+```
+
+Wald test failed due to instability (coefficient is huge (20.79), But standard error is even huger (1.434e+04 → 14,340). This indicates numerical instability or quasi-separation — often caused by Small sample size (n=16, 10 events)). Both the likelihood ratio test and score test show significant differences in relapse-free survival.
+*p-value on the plot is from the log-rank*
+
+```{r}
+surv_obj <- Surv(time = survival_LUAD_RFS_B$RFS_years, event = as.logical(survival_LUAD_RFS_B$Relapse))
+cox_model <- coxph(surv_obj ~ B_high, data = survival_LUAD_RFS_B)
+summary(cox_model)
+fit_km <- survfit(surv_obj ~ B_high, data = survival_LUAD_RFS_B)
+
+summary(fit_km)$table
+
+km_plot <- ggsurvplot(
+  fit_km,
+  data = survival_LUAD_RFS_B,
+  risk.table = F,
+  conf.int = F,
+  pval = TRUE,           # Automatically extracts p from Cox if only 2 groups
+  xlab = "Time (years)",
+  ylab = "Relapse-free survival probability",
+  legend.title = "Group"
+)
+km_plot
+ggsave(filename = paste0(output_folder, "LLM_B_RFS_quartile_Tumour_Core.png"),
+       plot = km_plot$plot,
+       width = 6, height = 5, dpi = 300)
+```
+
+
+
+
+# LUSC
+
+```{r}
+survival_LUSC <- lusc_patient_counts[, c("Patient", "Cancer Type", 'Date of death',
+                                            'OS (days)', 'Vital status', 'RFS (days)', 'Relapse', "immuneSubgr")]
+survival_LUSC <- survival_LUSC[!duplicated(survival_LUSC),]
+
+#new_col_names <- c("OS_years", "Death", "RFS_years", "Relapse")
+survival_LUSC$OS_years <- round(survival_LUSC$'OS (days)'/365.25, 2)
+survival_LUSC$Death <- as.logical(survival_LUSC$`Vital status`) # no invert here!
+survival_LUSC$RFS_years <- round(survival_LUSC$'RFS (days)'/365.25, 2)
+# sanity check here is NA in 'Date of death' column!
+head(survival_LUSC)
+
+```
+
+## OS LUSC
+
+```{r}
+table(survival_LUSC$immuneSubgr)
+
+do_survival_analysis(survival_LUSC, "immuneSubgr", "OS",
+                     output_folder, plot_title = "LUSC_CM")
+```

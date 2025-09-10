@@ -1,0 +1,444 @@
+---
+title: "LUSC vs LUAD Differential Gene Expression Analysis of the PanCK positive (Cancer) cells"
+author: "Claire based on Belinda/Jared code"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+
+# opts_knit only needed for Notebooks.
+if (endsWith(getwd(), "analysis")) {
+  knitr::opts_knit$set(
+    root.dir = normalizePath("..")
+  )
+}
+
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE
+)
+```
+
+# Load libraries
+
+```{r}
+library(standR)
+library(edgeR)
+library(SpatialExperiment)
+library(limma)
+#library(Glimma)
+library(ggrepel)
+library(ggalluvial)
+library(scater)
+library(readxl)
+library(tidyverse)
+library(pheatmap)
+library(statmod)
+```
+
+To ensure reproducibility, a fixed seed is set: it guarantee that the same random values are produced each time we run the code
+```{r}
+set.seed(42)
+```
+
+# Load in Data
+
+```{r}
+# Set the directory and file name
+RDataObjectsDir = "../ilaria/claires_part/rdata/"
+speCancerFileName = "speCancerMIBI_GeoMx.rds"
+
+# Read data from file
+speCancer <- readRDS(file=file.path(RDataObjectsDir, speCancerFileName))
+```
+
+## Comparisons
+
+Starting with Sex: It is observed that the male/female ratio is much larger for LUSC
+```{r}
+table(colData(speCancer)$CancerType, colData(speCancer)$Sex)
+barplot(table(colData(speCancer)$Sex, colData(speCancer)$CancerType), beside = TRUE, legend = TRUE, col = c(2 ,4), main = "Cancer Type and Sex")
+```
+Running a test of independence shows that the p-value is significant!
+```{r}
+summary(table(colData(speCancer)$CancerType, colData(speCancer)$Sex))
+```
+Next, we shall look at age
+
+From observation, it appears LUSC patients are nearly a decade older than LUAD patients
+```{r}
+boxplot(colData(speCancer)$Age ~ colData(speCancer)$CancerType, col = c(2 ,4), main = "Cancer Type and Age")
+```
+Running a linear model also reveals a significant correlation between CancerType and Age
+```{r}
+summary(lm(colData(speCancer)$Age ~ colData(speCancer)$CancerType))
+```
+Next, we shall look at Smoking Status.
+
+The most notable observation is that there are 0 never-smokers with LUSC. This makes smoking status not suitable for the design matrix, and there will be issues running a test of significant on this because of the 0 entry.
+
+```{r}
+table(colData(speCancer)$CancerType, colData(speCancer)$SmokingStatus)
+barplot(table(colData(speCancer)$CancerType, colData(speCancer)$SmokingStatus), beside = TRUE, legend = TRUE, col = c(2 ,4), main = "Cancer Type and Smoking Status")
+```
+
+# TMM normalization
+
+The next step is to undergo normalisation. TMM is used in the analysis
+
+Normalise using the standR function `geomxNorm`
+```{r}
+spe_tmm_cancer <- geomxNorm(speCancer, method = "TMM")
+```
+
+Convert to DGE object for Differential Gene Expression Analysis
+```{r}
+dgeCancer <- SE2DGEList(spe_tmm_cancer)
+```
+
+Copy over the norm factors manually as the norm.factors are not copied over by default
+```{r}
+dgeCancer$samples$norm.factors <- metadata(spe_tmm_cancer)$norm.factor
+```
+
+Visualize the counts to ensure that normalisation worked properly.
+
+```{r}
+logcountsCancer <- cpm.DGEList(dgeCancer, log=TRUE)
+boxplot(logcountsCancer)
+```
+View the RLE plot as well to ensure the samples are good.
+
+```{r, fig.height=5, fig.width=20}
+plotRLExpr(spe_tmm_cancer, ordannots = "SlideName", assay = "logcounts", col = SampleName)
+```
+# Normalised Data Visualisation Through Dimensional Reduction Analysis (MDS)
+
+First, start by looking at the MDS coloured by cancer type. It is worth noting that there are blue dots within the Red cluster. Double check to ensure the cancer is not mislabeled.
+
+```{r, fig.height=13, fig.width=15}
+#par(mfrow = c(3,3))
+
+layout(matrix(c(1,2,3,4,5,6,7,7,7), ncol=3, byrow=TRUE), heights=c(4, 4, 1.5))
+par(cex.axis = 1.5)
+par(cex.lab = 1.5)
+par(mai=rep(0.7, 4))
+
+PC12 <- plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$CancerType)], gene.selection = "common")
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$CancerType)], gene.selection = "common", dim = c(1,3))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$CancerType)], gene.selection = "common", dim = c(1,4))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$CancerType)], gene.selection = "common", dim = c(2,3))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$CancerType)], gene.selection = "common", dim = c(2,4))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$CancerType)], gene.selection = "common", dim = c(3,4))
+plot.new()
+legend(x="center", ncol=3, legend = levels(factor(dgeCancer$samples$CancerType)), col = c(2,4), pch = 16, title="Cancer Type", cex = 1.2)
+
+
+```
+Next is to color the data by Sex
+```{r, fig.height=13, fig.width=15}
+#par(mfrow = c(3,3))
+
+layout(matrix(c(1,2,3,4,5,6,7,7,7), ncol=3, byrow=TRUE), heights=c(4, 4, 1.5))
+par(cex.axis = 1.5)
+par(cex.lab = 1.5)
+par(mai=rep(0.7, 4))
+
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$Sex)], gene.selection = "common")
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$Sex)], gene.selection = "common", dim = c(1,3))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$Sex)], gene.selection = "common", dim = c(1,4))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$Sex)], gene.selection = "common", dim = c(2,3))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$Sex)], gene.selection = "common", dim = c(2,4))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(2,4)[factor(dgeCancer$samples$Sex)], gene.selection = "common", dim = c(3,4))
+plot.new()
+legend(x="center", ncol=3, legend = levels(factor(dgeCancer$samples$Sex)), col = c(2,4), pch = 16, title="Sex", cex = 1.2)
+
+```
+
+Despite not modelling Smoking status, lets see if there's any grouping. There is a noticeable grouping of non-smokers
+```{r, fig.height=13, fig.width=15}
+#par(mfrow = c(3,3))
+
+layout(matrix(c(1,2,3,4,5,6,7,7,7), ncol=3, byrow=TRUE), heights=c(4, 4, 1.5))
+par(cex.axis = 1.5)
+par(cex.lab = 1.5)
+par(mai=rep(0.7, 4))
+
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(14,2,4,1)[factor(dgeCancer$samples$SmokingStatus)], gene.selection = "common")
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(14,2,4,1)[factor(dgeCancer$samples$SmokingStatus)], gene.selection = "common", dim = c(1,3))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(14,2,4,1)[factor(dgeCancer$samples$SmokingStatus)], gene.selection = "common", dim = c(1,4))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(14,2,4,1)[factor(dgeCancer$samples$SmokingStatus)], gene.selection = "common", dim = c(2,3))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(14,2,4,1)[factor(dgeCancer$samples$SmokingStatus)], gene.selection = "common", dim = c(2,4))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(14,2,4,1)[factor(dgeCancer$samples$SmokingStatus)], gene.selection = "common", dim = c(3,4))
+plot.new()
+legend(x="center", ncol=3, legend = levels(factor(dgeCancer$samples$SmokingStatus)), col = c(14,2,4,1), pch = 16, title="SmokingStatus", cex = 1.2)
+
+```
+For slide year, there may be a noticeable difference between Sample Year 12 and 13
+```{r, fig.height=13, fig.width=15}
+#par(mfrow = c(3,3))
+
+layout(matrix(c(1,2,3,4,5,6,7,7,7), ncol=3, byrow=TRUE), heights=c(4, 4, 1.5))
+par(cex.axis = 1.5)
+par(cex.lab = 1.5)
+par(mai=rep(0.7, 4))
+
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(1:6)[factor(dgeCancer$samples$SampleYear)], gene.selection = "common")
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(1:6)[factor(dgeCancer$samples$SampleYear)], gene.selection = "common", dim = c(1,3))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(1:6)[factor(dgeCancer$samples$SampleYear)], gene.selection = "common", dim = c(1,4))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(1:6)[factor(dgeCancer$samples$SampleYear)], gene.selection = "common", dim = c(2,3))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(1:6)[factor(dgeCancer$samples$SampleYear)], gene.selection = "common", dim = c(2,4))
+plotMDS.DGEList(dgeCancer, pch = 16, col = c(1:6)[factor(dgeCancer$samples$SampleYear)], gene.selection = "common", dim = c(3,4))
+plot.new()
+legend(x="center", ncol=3, legend = levels(factor(dgeCancer$samples$SampleYear)), col = c(1:6), pch = 16, title="Sample Year", cex = 1.2)
+
+
+```
+# DGE Analysis Cancer
+
+```{r}
+designCancer <- model.matrix(~ factor(dgeCancer$samples$CancerType) + dgeCancer$samples$Age + factor (dgeCancer$samples$Sex))
+head(designCancer)
+```
+```{r}
+par(mfrow=c(1,1))
+vCancer <- voomLmFit(dgeCancer, designCancer, plot = TRUE, span = 0.05, block = dgeCancer$samples$SampleName,normalize.method="cyclicloess")
+```
+
+
+```{r}
+plot(vCancer$Amean, vCancer$sigma, pch=16, cex=0.3)
+```
+
+```{r}
+fitCancer <- eBayes(vCancer, robust = TRUE)
+```
+
+```{r}
+dim(fitCancer)
+```
+
+```{r}
+summa.fitCancer <- decideTests(fitCancer)
+summary(summa.fitCancer)
+```
+
+# Treat analysis (only for this whole analysis where we have a lot of DGE)
+
+```{r}
+tfitCancer <- treat(fitCancer, fc=1.1)
+```
+
+```{r}
+summa.tfitCancer <- decideTests(tfitCancer)
+summary(summa.tfitCancer)
+```
+
+Sorts by B as default:
+```{r}
+ResultTreatedCancer <- topTable(tfitCancer, coef = 2, sort.by = "p", n = Inf)
+topGenesTreatedCancer <- topTable(tfitCancer, coef = 2, sort.by = "p", n = Inf, p.value = 0.05)
+```
+
+Remove columns as some are not of interest in this analysis
+```{r}
+ResultTreatedCancer <- subset(ResultTreatedCancer, select = c(logFC, AveExpr, t, P.Value, adj.P.Val))
+topGenesTreatedCancer <- subset(topGenesTreatedCancer, select = c(logFC, AveExpr, t, P.Value, adj.P.Val))
+```
+
+Ensure that a directory is created
+```{r}
+# Create directory if it does not exist
+if (!dir.exists("results")) {
+  dir.create("results", recursive = TRUE)
+}
+```
+
+```{r eval=FALSE}
+write.csv(ResultTreatedCancer, file = "../output/Fig2/ResultLUSCvsLUADTreatedCancerAll.csv")
+write.csv(topGenesTreatedCancer, file = "../output/Fig2/topSigResultLUSCvsLUADTreatedCancerAll.csv")
+```
+
+# Plot Results
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+
+# Create the DE column first
+ResultTreatedCancer <- ResultTreatedCancer %>%
+  mutate(DE = ifelse(logFC > 0.5 & adj.P.Val < 0.05, "UP",
+                    ifelse(logFC < -0.5 & adj.P.Val < 0.05, "DOWN", "NOT DE")))
+
+# Filter data for "UP" and "DOWN" genes
+filtered_data <- ResultTreatedCancer %>%
+  filter(DE %in% c("UP", "DOWN")) %>%
+  mutate(Gene = rownames(.))
+
+# Filter data for specific genes
+highlighted_genes <- c("TP63", "NKX2.1", "KRT7", "MUC1", "SFTPB", "KRT5", "KRT6A")
+highlighted_data <- filtered_data %>% filter(Gene %in% highlighted_genes)
+
+# Filter out genes that are already in highlighted_data
+unhighlighted_data <- filtered_data %>% anti_join(highlighted_data, by = "Gene")
+
+# Now create the plot and use the filtered data for geom_text_repel
+MDPlotCancer <- ggplot(ResultTreatedCancer, aes(AveExpr, logFC, col = DE)) +
+  geom_point(shape = 16, size = 1) +
+  geom_text_repel(data = unhighlighted_data, aes(label = Gene), show.legend = FALSE,
+                  nudge_x = 0.5,  # Adjust the nudge along the x-axis
+                  nudge_y = 0.5,  # Adjust the nudge along the y-axis
+                  box.padding = 0.5, 
+                  max.overlaps = 30,  # Keep max.overlaps at 50
+                  segment.size = 0.2,  # add a segment between text and point
+                  segment.color = "black") +
+  geom_text_repel(data = highlighted_data,
+                 aes(label = Gene),
+                 nudge_x = -2,  # Adjust the nudge along the x-axis
+                  nudge_y = 0.1,  # Adjust the nudge along the y-axis
+                 show.legend = FALSE,
+                 box.padding = 0.5,
+                 max.overlaps = Inf,  # Set max.overlaps to Inf for specific genes
+                 segment.size = 0.2,  # add a segment between text and point
+                 fontface = "bold") +  # Bold labels for specific genes
+  theme_bw() +
+  xlab("Average log-expression") +
+  ylab("Log-fold-change") +
+  ggtitle("LUSC vs LUAD for PanCK (limma-voom)") +
+  scale_color_manual(values = c("blue", "grey", "red")) +
+  theme(text = element_text(size = 12, family = "Helvetica"))
+
+```
+
+
+Visualise MD Plot
+```{r}
+MDPlotCancer
+```
+Save MD Plot
+
+```{r}
+pdf(file="results/cancerLUSCvsLUADMDPlotAdjPValue-final.pdf",width=8,height=5,onefile = FALSE)
+MDPlotCancer
+dev.off()
+```
+
+
+##### Heatmap for 100top genes
+
+take the 100 top genes
+
+```{r}
+Top100genesCancer <- topTable(tfitCancer, sort.by = "p" ,coef=2, n=100, lfc = 0.5)
+```
+
+```{r}
+countsTop100genes <- tfitCancer$EList$E[rownames(Top100genesCancer),]
+```
+
+```{r}
+dgeCancerTop100genes <- dgeCancer$samples[colnames(countsTop100genes),]
+CancerType <- data.frame(dgeCancerTop100genes$Sex, dgeCancerTop100genes$CancerType)
+row.names(CancerType) <- rownames(dgeCancerTop100genes)
+```
+
+
+#heatmap
+```{r}
+pheatmap (countsTop100genes,
+          scale = "row",
+          fontsize = 3,
+          cellheight = 2,
+          show_colnames = FALSE,
+          annotation_col = CancerType,
+          #filename = "../output/Fig2/cancerTop100genes-LUADLUSC-Heatmap.pdf"
+          )
+
+```
+##### Heatmap for 50top genes
+
+take the 50 top genes
+
+```{r}
+Top50genesCancer <- topTable(tfitCancer, sort.by = "p" ,coef=2, n=50, lfc = 0.5)
+```
+
+```{r}
+countsTop50genes <- tfitCancer$EList$E[rownames(Top50genesCancer),]
+```
+
+```{r}
+dgeCancerTop50genes <- dgeCancer$samples[colnames(countsTop50genes),]
+CancerType <- data.frame(dgeCancerTop50genes$Sex, dgeCancerTop50genes$CancerType)
+row.names(CancerType) <- rownames(dgeCancerTop50genes)
+```
+
+
+#heatmap
+```{r}
+pheatmap (countsTop50genes,
+          scale = "row",
+          fontsize = 2,
+          extra_font = c("Helvetica"),
+          cellheight = 2,
+          show_colnames = FALSE,
+          annotation_col = CancerType,
+          filename = "results/cancerTop50genes-LUADLUSC-Heatmap-2.pdf"
+          )
+
+```
+
+##### Heatmap for 20top and 20down genes
+
+take the 50 top genes
+
+```{r}
+Top20genesCancer <- topTable(tfitCancer, sort.by = "p" ,coef=2, n=20, lfc = 0.5)
+Down20genesCancer <- topTable(tfitCancer, sort.by = "p" ,coef=2, n=20, lfc = -0.5)
+```
+
+```{r}
+countsTop20genes <- tfitCancer$EList$E[rownames(Top20genesCancer),]
+countsDown20genes <- tfitCancer$EList$E[rownames(Down20genesCancer),]
+countsCombined<- cbind(countsTop20genes,countsDown20genes)
+```
+
+```{r}
+dgeCancerTop20genes <- dgeCancer$samples[colnames(countsTop20genes),]
+dgeCancerDown20genes <- dgeCancer$samples[colnames(countsDown20genes),]
+combined<- cbind (dgeCancerTop20genes, dgeCancerDown20genes)
+CancerType <- data.frame(combined$Sex,combined$CancerType)
+row.names(CancerType) <- rownames(combined)
+```
+
+
+#heatmap
+```{r}
+pheatmap (countsCombined,
+          scale = "row",
+          fontsize = 3,
+          cellheight = 2,
+          show_colnames = FALSE,
+          annotation_col = CancerType,
+          #filename = "../output/Fig2/cancerTop20Down20genes-LUADLUSC-Heatmap.pdf"
+          )
+
+```
+
+
+
+
+

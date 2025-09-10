@@ -1,0 +1,427 @@
+---
+subtitle: "Figure 3 supp"
+title: "Other plots"
+author: "Ilariya Tarasova, Claire Marceaux"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(survival)
+library(survminer)
+library(destiny)
+```
+
+```{r}
+#file from Kenta
+source("../../src/calculate_cell_type_percentages.R")
+```
+
+```{r}
+output_folder <- "../plots/"
+if (!dir.exists(output_folder)){
+    dir.create(output_folder, recursive = T)
+}
+```
+
+# Load the data (CM only)
+
+```{r}
+patient_counts <- readRDS(file="../../data/CM_patient_counts_compartment_3_all_FM_TRM_macro_CD14_TRM_df.rds")
+LUAD_ImmuneSubgroups <- readRDS(file="../../data/CM_LUAD_immune_subgroups.rds")
+LUSC_ImmuneSubgroups <- readRDS(file="../../data/CM_LUSC_k2_immune_subgroups.rds")
+immune_subgroup_colors <- readRDS("../../data/immune_subgroup_colors.rds")
+
+patient_counts_CN <- readRDS("../../Figure2/interim_data/patient_counts_compartment_3_CN_spatial_clusters_df.rds")
+```
+
+Update immune subgrups info. Dor LUSC it's the same as was before
+
+```{r}
+luad_patient_counts <- patient_counts[patient_counts$`Cancer Type` == "LUAD",]
+luad_patient_counts$immuneSubgr <- LUAD_ImmuneSubgroups$cluster[match(luad_patient_counts$Patient, LUAD_ImmuneSubgroups$patient)]
+table(luad_patient_counts$immuneSubgr)
+
+lusc_patient_counts <- patient_counts[patient_counts$`Cancer Type` == "LUSC",]
+lusc_patient_counts$immuneSubgr <- LUSC_ImmuneSubgroups$cluster[match(lusc_patient_counts$Patient, LUSC_ImmuneSubgroups$patient)]
+
+lusc_patient_counts_CN <- patient_counts_CN[patient_counts_CN$`Cancer Type` == "LUSC",]
+lusc_patient_counts_CN$immuneSubgr <- LUSC_ImmuneSubgroups$cluster[match(lusc_patient_counts_CN$Patient, LUSC_ImmuneSubgroups$patient)]
+
+table(lusc_patient_counts_CN$immuneSubgr, lusc_patient_counts_CN$`MIBI clusters`)
+```
+
+All code here is taken from scripts provided by Claire M. I just put everything together and updated the immune subgroups.
+
+# Volcano plot LUSC: M vs LM
+
+## Calculate percentage
+
+```{r}
+# the grouping variable
+group_cols <- c("Patient", "immuneSubgr", "Compartment (3)")
+
+# the group types. Must be 2
+vars <- c("LM", "M")
+
+# proportion columns
+cell_types <- c(
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+)
+cell_types <- as.character(cell_types)
+
+parent_type <- "CN"
+
+colors <- c(
+    "chocolate4",
+    "goldenrod1",
+    "seagreen1",
+    "turquoise1",
+    "cyan4",
+    "darkorange2",
+    "red"
+)
+```
+
+
+```{r}
+# calculate the percentages
+percentages_df <- calculate_cell_type_percentages(lusc_patient_counts_CN, group_cols, cell_types, parent_type)
+
+# we need to filter out the percentages with less than 5 of epithelial cells
+percentages_df <- percentages_df %>% 
+    filter(parent_type_count >= 5)
+```
+
+## Calculate p values
+
+```{r}
+summary_df <- percentages_df %>%
+    group_by_at(c("immuneSubgr", "Compartment (3)", "percentage")) %>%
+    summarise(mean = mean(value)) %>%
+    pivot_wider(names_from = all_of(c("immuneSubgr")), values_from = "mean") %>%
+    mutate(log2FC = log2(.data[[vars[[1]]]]/.data[[vars[[2]]]]))
+
+
+
+p.values <- percentages_df %>%
+    group_by_at(c("Compartment (3)", "percentage")) %>%
+    group_modify(~{
+        return(data.frame(p.value=wilcox.test(value ~ immuneSubgr, .x, exact=FALSE)$p.value))
+    })
+
+
+
+summary_df$index <- paste(summary_df$`Compartment (3)`, summary_df$percentage)
+p.values$index <- paste(p.values$`Compartment (3)`, p.values$percentage)
+
+summary_df <- cbind(summary_df, p.values[match(summary_df$index, p.values$index), "p.value"])
+
+
+summary_df$percentage <- factor(summary_df$percentage, levels = unique(summary_df$percentage))
+```
+
+## Plot volcano
+
+```{r}
+xlim <- 4
+ggplot(summary_df, aes(x=log2FC, y=-log10(p.value), color=percentage)) +
+    geom_point(size=4, aes(shape=`Compartment (3)`)) + 
+    # scale_color_manual(values = colors) +
+    geom_vline(xintercept=0, linetype="dashed") + 
+    scale_x_continuous(breaks = round(seq(-xlim, xlim, by = 0.5),1), limits = c(-xlim, xlim)) + 
+    ylim(c(-0.05, 2.5))+
+    # xlim(c(-1.5, 1.5))+
+    geom_hline(yintercept = -log10(0.05), linetype="dashed") +
+    xlab("log2FC(LM/M)") + 
+    scale_color_manual(values=colors)+
+    theme(
+        axis.title.y=element_blank(),
+        # axis.text.y=element_blank(),
+        # axis.title.x = element_blank(),
+        # axis.ticks.y=element_blank(),
+        strip.text.y = element_blank(),
+        panel.background = element_blank(),
+        # legend.position = "none",
+        axis.line = element_line(colour = "black")
+    )
+ggsave(file.path(output_folder, paste0("volcano_plot_LUSC_LvsLM_CNclusters.png")))
+```
+
+# Boxplot: M-enriched
+
+## LUAD
+
+```{r}
+patient_counts <- luad_patient_counts  %>%
+    filter(immuneSubgr == "M")
+```
+
+```{r}
+compartment_col_name <- "Compartment (3)"
+
+run_name <- "LUAD_M_3_compartments_Myeloid_cell_over_Immune_cells_boxlpot"
+
+celltypes <- c(
+    "Macrophages", 
+    "Granulocytes", 
+    "Mast cells", 
+    "Dendritic cells")
+
+colors <- c(
+    "turquoise1",
+    "seagreen1",
+    "greenyellow",
+    "royalblue1"
+)
+
+denominators <- c(
+    "Immune cells",
+    "Immune cells",
+    "Immune cells",
+    "Immune cells"
+    )
+
+
+child_counts <- patient_counts[c("Patient", "Cancer Type",  compartment_col_name, celltypes)] %>%
+    pivot_longer(all_of(celltypes), names_to = "cell_type", values_to = "cell_type_count")
+denominator_counts <- patient_counts[c("Patient","Cancer Type",  compartment_col_name, denominators)] %>%
+    pivot_longer(all_of(make.unique(denominators)), names_to = "denominator_type", values_to = "denominator_count")
+denominator_counts$denominator_type <- gsub("\\.[1-9]", "", denominator_counts$denominator_type)
+
+long_percentages_ <- cbind(child_counts, denominator_counts[-c(1:3)])
+
+long_percentages_$value <- (long_percentages_$cell_type_count/long_percentages_$denominator_count) * 100
+long_percentages_$percentage <- paste0("(", long_percentages_$cell_type, "/", long_percentages_$denominator_type, ")%")
+
+
+# need to filter out the patients which have less than K denominator cell types
+min_number_denominator <- 5
+
+filtered_out <- long_percentages_ %>%
+    filter(denominator_count < min_number_denominator)
+
+filtered_out_summary <- filtered_out %>%
+    group_by_at(c("percentage", compartment_col_name)) %>%
+    summarise(n())
+
+long_percentages <- long_percentages_ %>%
+    filter(denominator_count >= min_number_denominator)
+
+kept_summary <- long_percentages %>%
+    group_by_at(c("percentage", compartment_col_name)) %>%
+    summarise(n())
+
+```
+
+```{r}
+comparisons <- list(c("Tumour Core", "Boundary"), c("Boundary", "Stroma Core"), c("Tumour Core", "Stroma Core"))
+long_percentages$`Compartment (3)` <- factor(long_percentages$`Compartment (3)`,
+                                             levels = c("Tumour Core", "Boundary", "Stroma Core"))
+
+
+dodge <- 1
+#, fill=proportion, alpha=`Compartment (3)`
+
+long_percentages$percentage <- factor(long_percentages$percentage, levels = unique(long_percentages$percentage))
+
+
+ggplot(long_percentages %>% filter(!is.na(!!as.name(compartment_col_name))), aes(x = !!as.name(compartment_col_name), y=value)) +
+    # stat_boxplot(geom = "errorbar", position = position_dodge(1))+ 
+    # The actual box plot
+    geom_boxplot(aes(fill=percentage, alpha=!!as.name(compartment_col_name)), position = position_dodge(dodge))+
+    # The jitter plot
+    geom_jitter(aes(fill=percentage, shape=!!as.name(compartment_col_name)), alpha=1, size=3, position = position_dodge(dodge)) +
+    scale_shape_manual(values = c( 19, 10 ,1 , 2))+
+    scale_fill_manual(values=colors) +
+    scale_color_manual(values=c("black", "grey32", "grey67", "grey")) +
+    scale_alpha_manual(values=c(1, 0.5, 0.1, 0.05)) +
+    # ggbreak::scale_y_break(c(45, 70)) + 
+    theme(
+        axis.title.y=element_blank(),
+        # axis.text.y=element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        # axis.ticks.y=element_blank(),
+        # strip.text.y = element_blank(),
+        panel.background = element_blank(),
+        axis.line.y = element_line(),
+        axis.line.x = element_line(),
+        # panel.spacing = unit(2, "lines")
+    ) +
+    facet_wrap(~ percentage, nrow = 1, scales = "free_x") +
+    ggpubr::stat_compare_means(comparisons = comparisons, hide.ns = F, method="wilcox.test", paired = F, exact = F)
+ggsave(file.path(output_folder, paste0(run_name, "_pvalue.png")))
+
+
+```
+
+
+
+## LUSC
+
+Same, as groups did not changed
+
+```{r}
+
+```
+
+
+# Heatmap: LUAD M-enriched
+
+```{r}
+patient_counts <- luad_patient_counts  %>%
+    filter(immuneSubgr == "M")
+```
+
+
+```{r}
+# group col
+group_cols <- c("Patient", "Compartment (3)")
+
+# myeloid
+cell_types <- c(
+    "Macrophages", 
+    "Granulocytes", 
+    "Mast cells", 
+    "Dendritic cells"
+)
+
+
+# functional markers
+non_specific_functional_markers <- c(
+    "Ki67",
+    "IFN-y",
+    "CD16",
+    "CD69",
+    "CD103",
+    "CD49a",
+    "Tim3"
+    # "MHC I (HLA Class1)",
+    # "MHC II (HLA-DR)"
+)
+
+myeloid_functional_markers <- c(
+    "CD14",
+    "CD163",
+    "CD206"
+)
+
+functional_markers <- c(non_specific_functional_markers,
+                        myeloid_functional_markers)
+
+
+# get all the cell type functional marker combinations
+combinations <- expand.grid(cell_types = cell_types, functional_markers = functional_markers)
+combinations_list <- paste0(combinations$cell_types, ": ", combinations$functional_markers, "+")
+```
+
+## Calculate the percentage
+
+```{r}
+# calculate the proportions
+percentages_df <- calculate_cell_type_percentages(patient_counts, group_cols, combinations_list, as.vector(combinations$cell_types))
+
+
+# remove 
+percentages_df <- percentages_df %>%
+    filter(parent_type_count >= 5)
+
+
+# check if the correct order is maintained
+print(paste("Cell type and parent pairing:", all(mapply(grepl, percentages_df$parent_type, percentages_df$cell_type))))
+
+# check if correct patient order
+print(paste("Correct patient order:", all(percentages_df$Patient == percentages_df$parent_Patient)))
+```
+
+## Calculate the Mean
+
+```{r}
+mean_percentages <- percentages_df %>%
+    group_by_at(c("Compartment (3)", "percentage", "cell_type", "parent_type")) %>%
+    summarise(mean_percentage = mean(value))
+
+# get the corresponding cell type and the functional marker for that column
+mean_percentages$functional_marker <- gsub("(.*: )|(\\+)", "", mean_percentages$cell_type)
+
+
+# add the factor levels to the cell type and functional markers 
+mean_percentages$parent_type <- factor(mean_percentages$parent_type, levels=rev(cell_types))
+mean_percentages$functional_marker <- factor(mean_percentages$functional_marker, levels = functional_markers)
+
+
+
+# standardise the percentages
+mean_percentages <- mean_percentages %>%
+    group_by_at(c("functional_marker")) %>%
+    mutate(standardised_mean = scale(mean_percentage)[,1])
+
+# add the grouping for the functional markers 
+mean_percentages$functional_marker_specificity <- "all"
+
+fm_myeloid_bool <- mean_percentages$functional_marker %in% myeloid_functional_markers 
+mean_percentages$functional_marker_specificity[fm_myeloid_bool] <- "Myeloid"
+
+
+mean_percentages$functional_marker_specificity <- factor(mean_percentages$functional_marker_specificity,
+                                                         levels = c("all", "Myeloid"))
+
+
+mean_percentages$`Compartment (3)` <- factor(mean_percentages$`Compartment (3)`, levels = c("Tumour Core", "Boundary", "Stroma Core"))
+```
+
+## Plot heatmap
+
+```{r}
+name_of_plot <- paste0(paste("celltype_functional_marker_heatmaps_LUAD_M_compartment_3",   sep="_"), ".png")
+
+# plot the heatmap 
+ggplot(mean_percentages, aes(x=functional_marker, y=parent_type, fill = standardised_mean)) + 
+    geom_raster() +
+    geom_tile(aes(fill = standardised_mean), colour = "black", linewidth = 0.2) + 
+    destiny::scale_fill_cube_helix(discrete = F, reverse=T)+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    # facet_wrap(vars(!!as.name(group_col)), nrow = 2) +
+    facet_grid(
+        # cols = vars(functional_marker_specificity), 
+        rows = vars(!!as.name("Compartment (3)")), 
+        scales="free", space = "free") +
+    theme(
+        
+        panel.background = element_blank(),
+        # strip.text.y = element_blank(),
+        legend.position="top",
+        plot.margin = margin(t = 0,  # Top margin
+                             r = -0.8,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0),
+        panel.spacing = unit(0.1, "cm")
+    ) +
+    ggtitle(paste("Scaled across rows (scaled within func. marker)"))
+ggsave(filename=file.path(output_folder, name_of_plot))
+```
+

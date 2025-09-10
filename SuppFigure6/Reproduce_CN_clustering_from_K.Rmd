@@ -1,0 +1,275 @@
+---
+subtitle: "Figure 6"
+title: "Perform Cell Neighbourhood clustering"
+author: "Ilariya Tarasova, Kenta Yokote"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    smart: yes
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    toc_float: true
+    toc_collapsed: true
+    number_sections: true
+    theme: lumen
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE, message=FALSE}
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(qs)
+library(SpatialExperiment)
+library(ggplot2)
+```
+
+# Source the function from Kenta
+
+```{r}
+source("../src/create_spatial_clusters.R")
+```
+
+## Fix the core function 
+
+The function was returning an error *Error in count(., Phenotype) : Argument 'x' is not a vector: list* even though I provided Phenotype as a vector. Chat GPT helped to fis the issue with `pivot_longer` function that for some reason converted that column to a list. The updated version of the function can be found below:
+
+```{r}
+find_nearest_neighbour_proportions_ <- function(cell_df, 
+                                                phenotype_col,
+                                                x_coordinates, 
+                                                y_coordinates, 
+                                                k_closest = 10,
+                                                max_dist = 50) {
+  if (nrow(cell_df) == 1) {
+    return(cell_df[, c("temp_cell_id")])
+  }
+
+  k_closest <- k_closest + 1
+  if (k_closest > nrow(cell_df)) {
+    warning(paste0(cell_df$Image[1], " has fewer rows than nearest neighbours. Using all rows."))
+    k_closest <- nrow(cell_df)
+  }
+
+  cell_df <- data.frame(cell_df, check.names = FALSE)
+  cell_df[[phenotype_col]] <- as.character(cell_df[[phenotype_col]])
+
+  # Nearest neighbor analysis
+  closest <- RANN::nn2(
+    data = cell_df[, c(x_coordinates, y_coordinates)], 
+    query = cell_df[, c(x_coordinates, y_coordinates)], 
+    k = k_closest
+  )
+
+  dists <- data.frame(closest$nn.dists)[, -1, drop = FALSE]
+  nn.idx <- data.frame(closest$nn.idx)[, -1, drop = FALSE]
+  colnames(dists) <- paste("Dist", 1:ncol(dists), sep = ":")
+  colnames(nn.idx) <- paste("NN:idx", 1:ncol(nn.idx), sep = ":")
+
+  # Initialize neighbor phenotype matrix
+  nn <- nn.idx
+  colnames(nn) <- paste("NN", 1:ncol(nn.idx), sep = ":")
+  
+  nn[] <- cell_df[match(as.integer(unlist(nn.idx)), as.integer(rownames(cell_df))), phenotype_col]
+
+  null_cell_type <- "TOO_FAR"
+  nn[dists > max_dist] <- null_cell_type
+
+  nn$temp_id <- as.numeric(rownames(nn))
+
+  # Flatten and count
+  long_nn <- pivot_longer(nn, cols = -temp_id, names_to = "Hierarchy:Level", 
+                          values_to = "Phenotype")
+  long_nn$Phenotype <- as.character(long_nn$Phenotype) #fix number two
+
+  counts <- long_nn %>%
+    group_by(temp_id, Phenotype) %>%
+    summarise(n = n(), .groups = "drop")
+
+  proportions <- counts %>%
+    pivot_wider(names_from = Phenotype, values_from = n, values_fill = 0)
+
+  proportions$temp_cell_id <- cell_df$temp_cell_id
+
+  # Remove TOO_FAR if present
+  if ("TOO_FAR" %in% colnames(proportions)) {
+    proportions <- proportions %>% select(-TOO_FAR)
+  }
+
+  # Convert counts to proportions
+  f <- function(x) x / (k_closest - 1)
+  proportions <- proportions %>% mutate(across(where(is.numeric), f))
+
+  return(proportions)
+}
+
+```
+
+# Run analysis for Sorin data
+
+## Read and prepare the data
+
+```{r}
+spe <- qread("~/cd14_paper/ilaria/spe_sorin/data/spe.qs")
+
+for_cn <- data.frame(Image = spe$Patient,
+                     Phenotype = as.character(spe$CellType),
+                     CellType_h1 = spe$CellType_h1,
+                     X = spatialCoords(spe)[,1],
+                     Y = spatialCoords(spe)[,2],
+                     check.names = F)
+
+dim(for_cn)
+for_cn_immune <- for_cn[for_cn$CellType_h1 == "Immune cell",]
+dim(for_cn_immune)
+```
+
+## Run CN function
+
+As we want to match results for CM, need the same number of clusters (7). Didn't quite like the clustering, so decided to run on 6 clusters
+
+```{r}
+out <- create_spatial_clusters(for_cn_immune, 
+                        image_col = "Image",
+                        phenotype_col = "Phenotype",
+                        x_coordinates = "X",
+                        y_coordinates = "Y",
+                        number_clusters_kmeans=6)
+
+#RNGstate <- .Random.seed
+cluster_objs <- kmeans(out[,-which(colnames(out) %in% 
+                                        c("Image", "temp_id", "cluster"))],
+                       centers = 6, iter.max = 30, nstart = 25)
+out$cl3_25 <- cluster_objs$cluster
+```
+
+Append the info that can be useful further for filtering before plotting
+and save the file
+
+```{r}
+out$cell.id <- rownames(for_cn_immune)
+for_cn$cell.id <- rownames(for_cn)
+
+cn_res <- for_cn %>% 
+  left_join(out, by = "cell.id") %>% 
+  mutate(CN.clusters = replace_na(cl3_25, -1))
+
+#saveRDS(cn_res, file = "../interim_data/out_CN6_Sorin_immune_only_new_kmean.rds")
+```
+
+## Plotting
+
+### Preparation
+
+```{r}
+# required columns 
+hierarchy_level_col <- 'Phenotype'
+groups <- "Image.x"
+
+cluster_col <- "CN.clusters"
+
+group_cols <- c()
+
+celltypes <- c("B cell",
+               "Th", 
+               "Tc", 
+               "Treg",
+               "NK cell", 
+               "T other", 
+               "Cl MAC", 
+               "Neutrophils", 
+               "Mast cell", 
+               "DCs cell")
+
+colors <- c(
+    "red",
+    "mediumorchid1",
+    "mediumpurple1",
+    "pink1",
+    "salmon1",
+    "palevioletred1",
+    "turquoise1",
+    "seagreen1",
+    "greenyellow",
+    "royalblue1"
+)
+
+output_folder <- "../plots/"
+if (!dir.exists(output_folder)){
+    dir.create(output_folder)
+}
+```
+
+### Summarise the data
+
+Here I'm confused. If we are interested only in a particular `celltypes`, should proportions be calculated only on those? Otherwise we will end up with lots of NA after forcing CellType into factor with levels only from `celltypes` (which are immune cells)
+
+```{r}
+#cn_res <- cn_res[,-which(colnames(cn_res) %in% celltypes)]
+
+summ_CN_data <- function(cn_res, cluster_col, hierarchy_level_col, group_cols, celltypes){
+  # summarise the cluster memberships
+  cohort_cluster_membership_proportions <- cn_res %>%
+      group_by_at(c(cluster_col, hierarchy_level_col, group_cols)) %>%
+      summarise(count=n()) %>%
+      ungroup() %>%
+      group_by_at(cluster_col)
+  
+  # calculate the proportions in each cluster
+  cohort_cluster_membership_proportions <- cohort_cluster_membership_proportions %>% 
+      group_by_at(c(cluster_col, group_cols)) %>% 
+      group_modify(~{
+          proportion <- .x$count / sum(.x$count)
+          cbind(.x, proportion)
+      }) %>% 
+      filter(CN.clusters != -1)
+  
+  # add the levels 
+  cohort_cluster_membership_proportions[, hierarchy_level_col] <- factor(cohort_cluster_membership_proportions   %>% pull(hierarchy_level_col),
+                                                                         levels = celltypes)
+  
+  cohort_cluster_membership_proportions <- cohort_cluster_membership_proportions %>%
+      group_by(CN.clusters) %>%
+      mutate(standardised_proportion = scale(proportion)[,1])
+  
+  return(cohort_cluster_membership_proportions)
+}
+
+```
+
+```{r}
+cohort_cluster_membership_proportions <- summ_CN_data(cn_res, cluster_col, 
+                                                      hierarchy_level_col, group_cols, celltypes)
+```
+
+
+### Heatmap
+
+```{r}
+# plot the heat map
+ggplot(cohort_cluster_membership_proportions, 
+       aes(x=!!as.name(hierarchy_level_col),
+           y=as.factor(CN.clusters),
+           fill = standardised_proportion)) + 
+    geom_raster() +
+    geom_tile(aes(fill = standardised_proportion), colour = "black", linewidth = 0.2) + 
+    scale_fill_distiller(palette = "YlGnBu")+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    # facet_grid(rows = vars(!!as.name(parent_col_name)), scales="free_y", space = "free") +
+    theme(
+        panel.background = element_blank(),
+        strip.text.y = element_blank(),
+        legend.position="top",
+        plot.margin = margin(t = 0,  # Top margin
+                             r = -0.8,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0),
+        panel.spacing = unit(0.001, "cm")
+    ) 
+ggsave(file.path(output_folder, "Sorin_CN6_membership_heatmap.png"), width = 5, height = 4)
+```
+

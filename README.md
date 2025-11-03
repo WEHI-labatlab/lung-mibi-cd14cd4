@@ -10,8 +10,14 @@ In vitro, TNF⍺ increased the transfer of membrane from myeloid cells to T cell
 
 ## Other repositories used in this project
 
-You can find details of [cell classification pipeline here](https://github.com/WEHI-labatlab/xgboost-cell-classification)
+You can find details of cell classification pipelines that was adapted to Nexflow here:
+
+* [Data preprocessing](https://github.com/BioimageAnalysisCoreWEHI/MIBI-preprocess-data)
+* [Training of XGBoost model](https://github.com/BioimageAnalysisCoreWEHI/MIBI-train-model)
+* [Applying the model](https://github.com/BioimageAnalysisCoreWEHI/MIBI-apply-model)
 
 ## Data
 
-Associated data is available on Zenodo [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17059378.svg)](https://doi.org/10.5281/zenodo.17059378)
+Associated with this repo data is available on Zenodo [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17051520.svg)](https://doi.org/10.5281/zenodo.17051520).
+
+The raw image data from MIBI is available by request.

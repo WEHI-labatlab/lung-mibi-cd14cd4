@@ -10,11 +10,11 @@ In vitro, TNF⍺ increased the transfer of membrane from myeloid cells to T cell
 
 ## Other repositories used in this project
 
-You can find details of cell classification pipelines that was adapted to Nexflow here:
+You can find details of cell classification pipelines that was adapted to Nexflow by Spatial Omics Data Analytics Hub (SODA) team at WEHI:
 
-* [Data preprocessing](https://github.com/BioimageAnalysisCoreWEHI/MIBI-preprocess-data)
-* [Training of XGBoost model](https://github.com/BioimageAnalysisCoreWEHI/MIBI-train-model)
-* [Applying the model](https://github.com/BioimageAnalysisCoreWEHI/MIBI-apply-model)
+* [Data preprocessing](https://github.com/WEHI-SODA-Hub/SODA-Classify-Preprocess-Data)
+* [Training of XGBoost model](https://github.com/WEHI-SODA-Hub/SODA-Classify-Train-Model)
+* [Applying the model](https://github.com/WEHI-SODA-Hub/SODA-Classify-Apply-Model)
 
 ## Data
 
